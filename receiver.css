@@ -1,6 +1,5 @@
 /* ══════════════════════════════════════════════════════════════════════════════
-   Monitorr Cast Receiver Theme
-   Matches the Monitorr "indigo" dark theme on Cast devices.
+   Monitorr Cast Receiver v0.0.2
    ══════════════════════════════════════════════════════════════════════════════ */
 
 :root {
@@ -13,6 +12,7 @@
   --mr-text-dim:    #a0a3b1;
   --mr-text-faint:  rgba(255, 255, 255, 0.3);
   --mr-border:      rgba(197, 202, 233, 0.12);
+  --mr-success:     #4caf50;
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -53,7 +53,7 @@ cast-media-player {
 }
 
 .idle-brand {
-  font-size: 4rem;
+  font-size: 4.5rem;
   font-weight: 700;
   letter-spacing: -0.02em;
   color: var(--mr-text);
@@ -66,10 +66,19 @@ cast-media-player {
 
 .idle-status {
   margin-top: 1rem;
-  font-size: 1rem;
+  font-size: 1.1rem;
   font-weight: 400;
   color: var(--mr-text-dim);
   letter-spacing: 0.04em;
+}
+
+.idle-version {
+  margin-top: 2rem;
+  font-size: 0.7rem;
+  font-weight: 500;
+  color: var(--mr-text-faint);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 @keyframes idle-glow {
@@ -77,7 +86,6 @@ cast-media-player {
   100% { opacity: 1; }
 }
 
-/* Subtle animated accent line below the brand */
 .idle-brand::after {
   content: '';
   display: block;
@@ -98,14 +106,27 @@ cast-media-player {
 
 #monitorr-watermark {
   position: fixed;
-  top: 24px;
-  right: 28px;
+  top: 20px;
+  right: 24px;
   z-index: 50;
-  font-family: 'Inter', sans-serif;
-  font-size: 1.1rem;
-  font-weight: 700;
-  color: rgba(255, 255, 255, 0.12);
-  letter-spacing: 0.02em;
-  pointer-events: none;
   display: none;
+  align-items: baseline;
+  gap: 6px;
+  pointer-events: none;
+}
+
+.wm-brand {
+  font-family: 'Inter', sans-serif;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.1);
+  letter-spacing: 0.02em;
+}
+
+.wm-ver {
+  font-family: 'Inter', sans-serif;
+  font-size: 0.55rem;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.06);
+  letter-spacing: 0.05em;
 }

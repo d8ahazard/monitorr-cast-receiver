@@ -1,50 +1,32 @@
 'use strict';
 
-// ─── Monitorr Cast Receiver ──────────────────────────────────────────────────
-//
-// Custom Web Receiver for Google Cast that integrates with Monitorr's
-// server-side transcoding and HLS streaming pipeline.
-//
-// Key behaviors:
-//   - Accepts LOAD from Monitorr sender for both DirectPlay (MP4) and HLS
-//   - Overrides HLS manifest duration with the real movie duration from metadata
-//   - Reports accurate duration/position in MEDIA_STATUS so sender seek bars work
-//   - Provides urn:x-cast:com.monitorr.cast namespace for sender coordination
-//   - Forwards remote-initiated SEEK events to the sender for server-side handling
-//
-// Host this on GitHub Pages and register the URL in the Cast SDK Developer
-// Console to get your application ID. Then set that ID in Monitorr's config.
-// ─────────────────────────────────────────────────────────────────────────────
-
+// ─── Monitorr Cast Receiver v0.0.2 ──────────────────────────────────────────
 (function () {
 
+  var VERSION = '0.0.2';
   var NAMESPACE = 'urn:x-cast:com.monitorr.cast';
-  var TAG = '[Monitorr]';
+  var TAG = '[Monitorr v' + VERSION + ']';
 
   var context = cast.framework.CastReceiverContext.getInstance();
   var playerManager = context.getPlayerManager();
 
-  // ── State ────────────────────────────────────────────────────────────────
+  var CMD = cast.framework.messages.Command;
+  var SEEK_COMMANDS = CMD.PAUSE | CMD.SEEK | CMD.STREAM_VOLUME | CMD.STREAM_MUTE | CMD.STREAM_TRANSFER;
+
+  // ── State ──────────────────────────────────────────────────────────────────
 
   var realDuration = 0;
   var isHlsContent = false;
   var hlsSessionId = null;
   var monitorrOrigin = null;
 
-  // ── Playback Configuration ───────────────────────────────────────────────
+  // ── Playback Configuration ─────────────────────────────────────────────────
 
   var playbackConfig = new cast.framework.PlaybackConfig();
   playbackConfig.autoResumeDuration = 5;
   playbackConfig.initialBandwidthEstimate = 5000000;
 
-  // ── LOAD Interceptor ─────────────────────────────────────────────────────
-  // The Monitorr sender builds LOAD messages with:
-  //   contentId:    stream URL (direct MP4 or HLS master.m3u8)
-  //   contentType:  "video/mp4" or "application/x-mpegURL"
-  //   duration:     real movie duration in seconds (authoritative)
-  //   streamType:   "BUFFERED"
-  //   metadata:     { metadataType: 1, title, images }
-  //   hlsSegmentFormat / hlsVideoSegmentFormat: "fmp4" for HLS
+  // ── LOAD Interceptor ───────────────────────────────────────────────────────
 
   playerManager.setMessageInterceptor(
     cast.framework.messages.MessageType.LOAD,
@@ -53,52 +35,37 @@
       if (!media) return request;
 
       var url = media.contentId || media.contentUrl || '';
-      console.log(TAG, 'LOAD', url);
+      console.log(TAG, 'LOAD', url, 'duration:', media.duration);
 
-      // Store authoritative duration (HLS manifest only knows transcoded-so-far)
       realDuration = (media.duration > 0) ? media.duration : 0;
 
-      // Detect content type
       isHlsContent = url.indexOf('.m3u8') !== -1 ||
         media.contentType === 'application/x-mpegURL' ||
         media.contentType === 'application/vnd.apple.mpegurl';
 
-      // Extract HLS session ID from URL pattern /hls/{sessionId}/
       var match = url.match(/\/hls\/([a-f0-9]+)\//);
       hlsSessionId = match ? match[1] : null;
 
-      // Remember server origin for API calls
-      try {
-        var parsed = new URL(url);
-        monitorrOrigin = parsed.origin;
-      } catch (e) { monitorrOrigin = null; }
+      try { monitorrOrigin = new URL(url).origin; } catch (e) { monitorrOrigin = null; }
 
+      // HLS segment format hints
       if (isHlsContent) {
         media.hlsSegmentFormat = cast.framework.messages.HlsSegmentFormat.FMP4;
         media.hlsVideoSegmentFormat = cast.framework.messages.HlsVideoSegmentFormat.FMP4;
-        media.streamType = cast.framework.messages.StreamType.BUFFERED;
       }
 
-      // Force BUFFERED stream type and ensure duration is set so the player
-      // treats this as seekable VOD, not a live/event stream.
+      // Force VOD / seekable treatment regardless of HLS playlist type
       media.streamType = cast.framework.messages.StreamType.BUFFERED;
-
-      // Explicitly enable seek + all basic media commands on the media itself
-      var CMD = cast.framework.messages.Command;
-      request.media.supportedMediaCommands =
-        CMD.PAUSE | CMD.SEEK | CMD.STREAM_VOLUME | CMD.STREAM_MUTE |
-        CMD.STREAM_TRANSFER;
+      media.supportedMediaCommands = SEEK_COMMANDS;
 
       setIdleVisible(false);
+      console.log(TAG, 'LOAD processed: hls=' + isHlsContent + ' duration=' + realDuration + ' session=' + hlsSessionId);
 
       return request;
     }
   );
 
-  // ── SEEK Interceptor ─────────────────────────────────────────────────────
-  // For HLS content, the receiver can only seek within available segments.
-  // We notify the Monitorr sender so it can trigger a server-side transcode
-  // restart and send a fresh LOAD if the target is beyond the frontier.
+  // ── SEEK Interceptor ───────────────────────────────────────────────────────
 
   playerManager.setMessageInterceptor(
     cast.framework.messages.MessageType.SEEK,
@@ -117,67 +84,46 @@
     }
   );
 
-  // ── MEDIA_STATUS Interceptor ─────────────────────────────────────────────
-  // Override the duration in every status broadcast so sender UIs always
-  // show the full movie length, not the partial HLS manifest duration.
+  // ── MEDIA_STATUS Interceptor ───────────────────────────────────────────────
+  // Patches every outgoing status to force seek support + correct duration.
 
   playerManager.setMessageInterceptor(
     cast.framework.messages.MessageType.MEDIA_STATUS,
-    function (statusMessage) {
-      var CMD = cast.framework.messages.Command;
-      var seekCommands = CMD.PAUSE | CMD.SEEK | CMD.STREAM_VOLUME | CMD.STREAM_MUTE | CMD.STREAM_TRANSFER;
-
-      if (statusMessage.status) {
-        for (var i = 0; i < statusMessage.status.length; i++) {
-          var s = statusMessage.status[i];
-          // Force seek support on every status broadcast
-          s.supportedMediaCommands = seekCommands;
+    function (msg) {
+      if (msg.status) {
+        for (var i = 0; i < msg.status.length; i++) {
+          var s = msg.status[i];
+          s.supportedMediaCommands = SEEK_COMMANDS;
           if (s.media) {
             if (realDuration > 0) s.media.duration = realDuration;
             s.media.streamType = cast.framework.messages.StreamType.BUFFERED;
-            s.media.supportedMediaCommands = seekCommands;
+            s.media.supportedMediaCommands = SEEK_COMMANDS;
           }
         }
       }
-      return statusMessage;
+      return msg;
     }
   );
 
-  // ── Player Events ────────────────────────────────────────────────────────
+  // ── Player Events ──────────────────────────────────────────────────────────
 
   playerManager.addEventListener(
     cast.framework.events.EventType.PLAYER_LOAD_COMPLETE,
     function () {
-      console.log(TAG, 'Load complete, duration:', realDuration);
+      console.log(TAG, 'Load complete');
 
       var mediaInfo = playerManager.getMediaInformation();
       if (mediaInfo) {
-        // Override duration so seek bar shows full movie length
-        if (realDuration > 0) {
-          mediaInfo.duration = realDuration;
-        }
-        // Force BUFFERED so the player treats it as seekable VOD
+        if (realDuration > 0) mediaInfo.duration = realDuration;
         mediaInfo.streamType = cast.framework.messages.StreamType.BUFFERED;
-
-        // Force supported media commands to include SEEK
-        var CMD = cast.framework.messages.Command;
-        mediaInfo.supportedMediaCommands =
-          CMD.PAUSE | CMD.SEEK | CMD.STREAM_VOLUME | CMD.STREAM_MUTE |
-          CMD.STREAM_TRANSFER;
+        mediaInfo.supportedMediaCommands = SEEK_COMMANDS;
       }
 
-      // Also set at the player manager level
-      playerManager.setSupportedMediaCommands(
-        cast.framework.messages.Command.PAUSE |
-        cast.framework.messages.Command.SEEK |
-        cast.framework.messages.Command.STREAM_VOLUME |
-        cast.framework.messages.Command.STREAM_MUTE |
-        cast.framework.messages.Command.STREAM_TRANSFER,
-        true
-      );
-
+      // Set at player manager level and force broadcast
+      playerManager.setSupportedMediaCommands(SEEK_COMMANDS, true);
       playerManager.broadcastStatus();
-      console.log(TAG, 'Broadcast status with seek enabled, duration:', realDuration);
+
+      console.log(TAG, 'Status broadcast: seek=ON, duration=' + realDuration);
     }
   );
 
@@ -197,21 +143,7 @@
     }
   );
 
-  // ── Custom Namespace ─────────────────────────────────────────────────────
-  // urn:x-cast:com.monitorr.cast protocol:
-  //
-  //   Sender → Receiver:
-  //     SEEK_OFFSET  { offset: <seconds> }   After server-side seek, tells
-  //                                           receiver about the new offset.
-  //     PING         {}                       Health check.
-  //     CONFIG       { ... }                  Optional configuration.
-  //
-  //   Receiver → Sender:
-  //     PONG           { currentTime, duration, hlsSessionId, playerState }
-  //     SEEK_REQUESTED { targetTime, hlsSessionId }  A remote-initiated seek
-  //                                                   that needs server-side
-  //                                                   transcode restart.
-  //     STATUS         { currentTime, duration, playerState }
+  // ── Custom Namespace ───────────────────────────────────────────────────────
 
   context.addCustomMessageListener(NAMESPACE, function (event) {
     var data = event.data;
@@ -221,6 +153,7 @@
       case 'PING':
         context.sendCustomMessage(NAMESPACE, event.senderId, {
           type: 'PONG',
+          version: VERSION,
           currentTime: playerManager.getCurrentTimeSec(),
           duration: realDuration,
           hlsSessionId: hlsSessionId,
@@ -237,13 +170,11 @@
     }
   });
 
-  // ── Sender connect/disconnect ────────────────────────────────────────────
+  // ── Sender connect/disconnect ──────────────────────────────────────────────
 
   context.addEventListener(
     cast.framework.system.EventType.SENDER_CONNECTED,
-    function (event) {
-      console.log(TAG, 'Sender connected:', event.senderId);
-    }
+    function (event) { console.log(TAG, 'Sender connected:', event.senderId); }
   );
 
   context.addEventListener(
@@ -257,7 +188,7 @@
     }
   );
 
-  // ── Helpers ──────────────────────────────────────────────────────────────
+  // ── Helpers ────────────────────────────────────────────────────────────────
 
   function broadcastToSenders(data) {
     try {
@@ -281,17 +212,15 @@
     var el = document.getElementById('monitorr-idle');
     if (el) el.style.display = visible ? 'flex' : 'none';
     var wm = document.getElementById('monitorr-watermark');
-    if (wm) wm.style.display = visible ? 'none' : 'block';
+    if (wm) wm.style.display = visible ? 'none' : 'flex';
   }
 
-  // ── Start ────────────────────────────────────────────────────────────────
+  // ── Start ──────────────────────────────────────────────────────────────────
 
   var opts = new cast.framework.CastReceiverOptions();
   opts.playbackConfig = playbackConfig;
   opts.maxInactivity = 3600;
-  opts.supportedCommands =
-    cast.framework.messages.Command.ALL_BASIC_MEDIA |
-    cast.framework.messages.Command.STREAM_TRANSFER;
+  opts.supportedCommands = CMD.ALL_BASIC_MEDIA | CMD.STREAM_TRANSFER;
   opts.customNamespaces = {};
   opts.customNamespaces[NAMESPACE] = cast.framework.system.MessageType.JSON;
 
