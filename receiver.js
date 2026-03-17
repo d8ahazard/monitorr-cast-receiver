@@ -9,7 +9,7 @@
 
 (function () {
 
-  var VERSION = '0.1.0';
+  var VERSION = '0.1.1';
   var TAG = '[Monitorr v' + VERSION + ']';
   var MEDIA_NS = 'urn:x-cast:com.google.cast.media';
   var MONITORR_NS = 'urn:x-cast:com.monitorr.cast';
@@ -191,10 +191,27 @@
         hls.once(Hls.Events.MANIFEST_PARSED, function () {
           video.currentTime = 0;
           video.play().catch(function () {});
-          serverSeeking = false;
-          hideSpinner();
-          sendMediaStatus(senderId, reqId);
-          flashOverlay();
+
+          // Wait until the video is actually playing at the new position
+          // before un-freezing status updates (prevents the 0:00 flash)
+          function onPlaying() {
+            video.removeEventListener('playing', onPlaying);
+            serverSeeking = false;
+            hideSpinner();
+            sendMediaStatus(senderId, reqId);
+            flashOverlay();
+          }
+          video.addEventListener('playing', onPlaying);
+
+          // Safety: if playing event doesn't fire within 3s, unfreeze anyway
+          setTimeout(function () {
+            video.removeEventListener('playing', onPlaying);
+            if (serverSeeking) {
+              serverSeeking = false;
+              hideSpinner();
+              sendMediaStatus(senderId, reqId);
+            }
+          }, 3000);
         });
       })
       .catch(function (err) {
@@ -333,7 +350,7 @@
   function startStatusBroadcaster() {
     stopStatusBroadcaster();
     statusTimer = setInterval(function () {
-      broadcastMediaStatus(0);
+      if (!serverSeeking) broadcastMediaStatus(0);
     }, 2000);
   }
 
@@ -375,6 +392,7 @@
   });
 
   function updateOverlayProgress() {
+    if (serverSeeking) return;
     var total = realDuration > 0 ? realDuration : (isFinite(video.duration) ? video.duration : 0);
     var current = getCurrentTime();
     if (timeLeft) timeLeft.textContent = formatTime(current);
