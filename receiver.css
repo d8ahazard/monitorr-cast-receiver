@@ -1,17 +1,18 @@
 /* ══════════════════════════════════════════════════════════════════════════════
-   Monitorr Cast Receiver v0.0.8
+   Monitorr Cast Receiver v0.1.0
+   TV-optimized player overlay ported from the Monitorr web player.
    ══════════════════════════════════════════════════════════════════════════════ */
 
 :root {
   --mr-bg:          #0d1117;
-  --mr-surface:     #161b2e;
   --mr-primary:     #3f51b5;
   --mr-accent:      #03a9f4;
-  --mr-accent-dark: #0288d1;
   --mr-text:        #ecedf0;
   --mr-text-dim:    #a0a3b1;
   --mr-text-faint:  rgba(255, 255, 255, 0.3);
-  --mr-border:      rgba(197, 202, 233, 0.12);
+  --mr-slider-active: #03a9f4;
+  --mr-slider-buffered: rgba(197, 202, 233, 0.35);
+  --mr-slider-track: rgba(197, 202, 233, 0.15);
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -20,83 +21,202 @@ html, body {
   width: 100%;
   height: 100%;
   overflow: hidden;
-  background: var(--mr-bg);
+  background: #000;
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   -webkit-font-smoothing: antialiased;
 }
 
-/* ── Custom Player ──────────────────────────────────────────────────────────── */
+/* ── Player Container ────────────────────────────────────────────────────── */
 
-#monitorr-player {
+#mr-player {
   position: fixed;
   inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
   background: #000;
-  z-index: 1;
 }
 
-#monitorr-video {
+#mr-video {
   width: 100%;
   height: 100%;
   object-fit: contain;
   background: #000;
 }
 
-/* ── Metadata Overlay (bottom-left, auto-hides) ─────────────────────────────── */
+/* ── Loading Spinner ─────────────────────────────────────────────────────── */
 
-#meta-overlay {
+#mr-spinner {
   position: fixed;
-  bottom: 40px;
-  left: 40px;
-  z-index: 10;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+}
+
+.mr-spinner-ring {
+  width: 56px;
+  height: 56px;
+  border: 4px solid rgba(255, 255, 255, 0.15);
+  border-top-color: var(--mr-accent);
+  border-radius: 50%;
+  animation: mr-spin 0.8s linear infinite;
+}
+
+@keyframes mr-spin { to { transform: rotate(360deg); } }
+
+/* ── Bottom Overlay ──────────────────────────────────────────────────────── */
+
+#mr-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.4s ease;
+}
+
+#mr-overlay.visible {
+  opacity: 1;
+}
+
+.mr-gradient {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 240px;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.85));
+  pointer-events: none;
+}
+
+.mr-bottom {
+  position: relative;
+  z-index: 1;
+  padding: 0 48px 36px;
+}
+
+/* ── Seek Bar ────────────────────────────────────────────────────────────── */
+
+.mr-seek-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.mr-time {
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--mr-text-dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  min-width: 60px;
+}
+
+.mr-time:last-child {
+  text-align: right;
+}
+
+.mr-seek-track {
+  flex: 1;
+  height: 6px;
+  background: var(--mr-slider-track);
+  border-radius: 3px;
+  position: relative;
+  overflow: visible;
+}
+
+.mr-seek-buffered {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  background: var(--mr-slider-buffered);
+  border-radius: 3px;
+  pointer-events: none;
+  width: 0;
+}
+
+.mr-seek-played {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  background: var(--mr-slider-active);
+  border-radius: 3px;
+  pointer-events: none;
+  width: 0;
+}
+
+/* ── Meta + Brand Row ────────────────────────────────────────────────────── */
+
+.mr-info-row {
   display: flex;
   align-items: flex-end;
   gap: 16px;
-  opacity: 1;
-  transition: opacity 0.5s ease;
-  pointer-events: none;
-  animation: meta-fade 8s ease forwards;
 }
 
-@keyframes meta-fade {
-  0%, 60% { opacity: 1; }
-  100%    { opacity: 0; }
-}
-
-#meta-poster {
-  display: none;
-  width: 80px;
-  height: 120px;
-  border-radius: 6px;
+.mr-poster {
+  width: 56px;
+  height: 84px;
+  border-radius: 4px;
   object-fit: cover;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.6);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.5);
+  flex-shrink: 0;
 }
 
-#meta-text {
+.mr-meta {
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
 }
 
-#meta-title {
-  font-size: 1.4rem;
+.mr-title {
+  font-size: 20px;
   font-weight: 600;
   color: var(--mr-text);
-  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.7);
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.6);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-#meta-subtitle {
-  font-size: 0.85rem;
+.mr-subtitle {
+  font-size: 14px;
   font-weight: 400;
   color: var(--mr-text-dim);
-  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.7);
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
 }
 
-/* ── Idle Screen ────────────────────────────────────────────────────────────── */
+.mr-brand {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-shrink: 0;
+  opacity: 0.3;
+}
 
-#monitorr-idle {
+.mr-brand-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--mr-text);
+}
+
+.mr-brand-ver {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--mr-text-faint);
+}
+
+/* ── Idle Screen ─────────────────────────────────────────────────────────── */
+
+#mr-idle {
   position: fixed;
   inset: 0;
   z-index: 100;
@@ -105,14 +225,12 @@ html, body {
   align-items: center;
   justify-content: center;
   background: linear-gradient(135deg, #0a0e1a 0%, #0d1117 40%, #111827 100%);
-  pointer-events: none;
 }
 
 .idle-brand {
-  font-size: 4.5rem;
+  font-size: 5rem;
   font-weight: 700;
   letter-spacing: -0.02em;
-  color: var(--mr-text);
   background: linear-gradient(135deg, var(--mr-primary), var(--mr-accent));
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
@@ -122,15 +240,14 @@ html, body {
 
 .idle-status {
   margin-top: 1rem;
-  font-size: 1.1rem;
-  font-weight: 400;
+  font-size: 1.2rem;
   color: var(--mr-text-dim);
   letter-spacing: 0.04em;
 }
 
 .idle-version {
   margin-top: 2rem;
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   font-weight: 500;
   color: var(--mr-text-faint);
   letter-spacing: 0.08em;
@@ -156,31 +273,4 @@ html, body {
 @keyframes idle-line {
   0%, 100% { width: 60px; opacity: 0.5; }
   50%      { width: 120px; opacity: 1; }
-}
-
-/* ── Playback Watermark ─────────────────────────────────────────────────────── */
-
-#monitorr-watermark {
-  position: fixed;
-  top: 20px;
-  right: 24px;
-  z-index: 50;
-  display: none;
-  align-items: baseline;
-  gap: 6px;
-  pointer-events: none;
-}
-
-.wm-brand {
-  font-family: 'Inter', sans-serif;
-  font-size: 0.85rem;
-  font-weight: 600;
-  color: rgba(255, 255, 255, 0.1);
-}
-
-.wm-ver {
-  font-family: 'Inter', sans-serif;
-  font-size: 0.55rem;
-  font-weight: 500;
-  color: rgba(255, 255, 255, 0.06);
 }

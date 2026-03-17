@@ -1,96 +1,225 @@
 'use strict';
 
-// ─── Monitorr Cast Receiver v0.0.7 ──────────────────────────────────────────
+// ─── Monitorr Cast Receiver v0.1.0 ──────────────────────────────────────────
 //
-// Uses HLS.js (same as the web player) instead of the built-in cast-media-player.
-// This gives us full control: seeking reloads the HLS source in-place without
-// restarting the Cast app or creating a new media session.
+// Fully custom receiver: HLS.js player, hand-crafted MEDIA_STATUS messages,
+// server-side seeking with seekOffset tracking, no dependency on PlayerManager
+// internal state or cast-media-player element.
 // ─────────────────────────────────────────────────────────────────────────────
 
 (function () {
 
-  var VERSION = '0.0.8';
-  var NAMESPACE = 'urn:x-cast:com.monitorr.cast';
+  var VERSION = '0.1.0';
   var TAG = '[Monitorr v' + VERSION + ']';
+  var MEDIA_NS = 'urn:x-cast:com.google.cast.media';
+  var MONITORR_NS = 'urn:x-cast:com.monitorr.cast';
 
   var context = cast.framework.CastReceiverContext.getInstance();
-  var playerManager = context.getPlayerManager();
 
-  var CMD = cast.framework.messages.Command;
-  var ALL_COMMANDS = CMD.ALL_BASIC_MEDIA | CMD.STREAM_TRANSFER;
+  // ── DOM ────────────────────────────────────────────────────────────────────
+
+  var video = document.getElementById('mr-video');
+  var idleScreen = document.getElementById('mr-idle');
+  var playerScreen = document.getElementById('mr-player');
+  var overlay = document.getElementById('mr-overlay');
+  var seekPlayed = document.getElementById('mr-seek-played');
+  var seekBuffered = document.getElementById('mr-seek-buffered');
+  var timeLeft = document.getElementById('mr-time-left');
+  var timeRight = document.getElementById('mr-time-right');
+  var metaTitle = document.getElementById('mr-title');
+  var metaSubtitle = document.getElementById('mr-subtitle');
+  var metaPoster = document.getElementById('mr-poster');
+  var spinner = document.getElementById('mr-spinner');
 
   // ── State ──────────────────────────────────────────────────────────────────
 
+  var hls = null;
+  var mediaSessionId = 0;
   var realDuration = 0;
-  var isHlsContent = false;
+  var seekOffset = 0;
+  var currentUrl = null;
   var hlsSessionId = null;
   var monitorrOrigin = null;
-  var currentContentUrl = null;
-  var serverSeeking = false;
   var lastMetadata = null;
-  var hls = null;
-
-  var video = document.getElementById('monitorr-video');
-  playerManager.setMediaElement(video);
-
-  // ── Playback Configuration ─────────────────────────────────────────────────
-
-  var playbackConfig = new cast.framework.PlaybackConfig();
-  playbackConfig.autoResumeDuration = 5;
-
-  // ── LOAD Interceptor ───────────────────────────────────────────────────────
-  // We handle HLS loading ourselves via HLS.js, so we intercept LOAD and
-  // return null (suppress default) after setting up the player.
-
-  playerManager.setMessageInterceptor(
-    cast.framework.messages.MessageType.LOAD,
-    function (request) {
-      var media = request.media;
-      if (!media) return request;
-
-      var url = media.contentId || media.contentUrl || '';
-      console.log(TAG, 'LOAD', url, 'duration:', media.duration);
-
-      if (media.duration > 0) realDuration = media.duration;
-      currentContentUrl = url;
-
-      isHlsContent = url.indexOf('.m3u8') !== -1 ||
-        media.contentType === 'application/x-mpegURL' ||
-        media.contentType === 'application/vnd.apple.mpegurl';
-
-      var match = url.match(/\/hls\/([a-f0-9]+)\//);
-      hlsSessionId = match ? match[1] : null;
-
-      try { monitorrOrigin = new URL(url).origin; } catch (e) { monitorrOrigin = null; }
-
-      if (media.metadata) lastMetadata = media.metadata;
-
-      media.streamType = cast.framework.messages.StreamType.BUFFERED;
-      media.supportedMediaCommands = ALL_COMMANDS;
-
-      setIdleVisible(false);
-      serverSeeking = false;
-      updateMetadataDisplay();
-
-      if (isHlsContent && typeof Hls !== 'undefined' && Hls.isSupported()) {
-        loadWithHlsJs(url);
-        // Don't return the request -- we manage the player ourselves
-        // But we still need the framework to track media info
-        return request;
-      }
-
-      // DirectPlay fallback: let the framework handle MP4
-      return request;
-    }
-  );
-
+  var serverSeeking = false;
   var statusTimer = null;
+  var overlayTimer = null;
+  var isHlsContent = false;
 
-  function loadWithHlsJs(url) {
-    if (hls) {
-      hls.destroy();
-      hls = null;
+  // ── Media Namespace Listener ───────────────────────────────────────────────
+  // We handle ALL media messages ourselves instead of using PlayerManager.
+
+  context.addCustomMessageListener(MEDIA_NS, function (event) {
+    var data = event.data;
+    var senderId = event.senderId;
+    var reqId = data.requestId || 0;
+
+    console.log(TAG, 'Media msg:', data.type, 'from', senderId);
+
+    switch (data.type) {
+      case 'LOAD':
+        handleLoad(data, senderId, reqId);
+        break;
+      case 'PLAY':
+        video.play().catch(function () {});
+        sendMediaStatus(senderId, reqId);
+        break;
+      case 'PAUSE':
+        video.pause();
+        sendMediaStatus(senderId, reqId);
+        break;
+      case 'STOP':
+        handleStop(senderId, reqId);
+        break;
+      case 'SEEK':
+        handleSeek(data, senderId, reqId);
+        break;
+      case 'GET_STATUS':
+        sendMediaStatus(senderId, reqId);
+        break;
+      case 'SET_VOLUME':
+        if (data.volume) {
+          if (data.volume.level !== undefined) video.volume = data.volume.level;
+          if (data.volume.muted !== undefined) video.muted = data.volume.muted;
+        }
+        sendMediaStatus(senderId, reqId);
+        break;
+      default:
+        console.log(TAG, 'Unhandled media msg:', data.type);
+        sendMediaStatus(senderId, reqId);
     }
+  });
+
+  // ── LOAD ───────────────────────────────────────────────────────────────────
+
+  function handleLoad(data, senderId, reqId) {
+    var media = data.media;
+    if (!media || !media.contentId) {
+      console.error(TAG, 'LOAD: no contentId');
+      return;
+    }
+
+    var url = media.contentId;
+    console.log(TAG, 'LOAD:', url);
+
+    // Cleanup previous session
+    destroyPlayer();
+
+    mediaSessionId++;
+    currentUrl = url;
+    seekOffset = 0;
+    serverSeeking = false;
+
+    if (media.duration > 0) realDuration = media.duration;
+    else realDuration = 0;
+
+    lastMetadata = media.metadata || null;
+
+    isHlsContent = url.indexOf('.m3u8') !== -1 ||
+      (media.contentType && media.contentType.indexOf('mpegURL') !== -1);
+
+    var match = url.match(/\/hls\/([a-f0-9]+)\//);
+    hlsSessionId = match ? match[1] : null;
+
+    try { monitorrOrigin = new URL(url).origin; } catch (e) { monitorrOrigin = null; }
+
+    // Apply start position from sender (resume point)
+    var startTime = data.currentTime || 0;
+    if (startTime > 0) seekOffset = startTime;
+
+    // Update UI
+    showPlayer();
+    updateMetadata();
+    showSpinner();
+
+    if (isHlsContent && typeof Hls !== 'undefined' && Hls.isSupported()) {
+      loadHls(url, function () {
+        hideSpinner();
+        if (realDuration <= 0) fetchDuration();
+        startStatusBroadcaster();
+        sendMediaStatus(senderId, reqId);
+        flashOverlay();
+      });
+    } else {
+      video.src = url;
+      video.addEventListener('canplay', function onCanPlay() {
+        video.removeEventListener('canplay', onCanPlay);
+        video.play().catch(function () {});
+        hideSpinner();
+        startStatusBroadcaster();
+        sendMediaStatus(senderId, reqId);
+      });
+    }
+  }
+
+  // ── SEEK ───────────────────────────────────────────────────────────────────
+
+  function handleSeek(data, senderId, reqId) {
+    var targetTime = data.currentTime;
+    if (targetTime === undefined) return;
+
+    console.log(TAG, 'SEEK to', targetTime);
+
+    if (!isHlsContent || !hlsSessionId || !monitorrOrigin) {
+      video.currentTime = targetTime;
+      sendMediaStatus(senderId, reqId);
+      return;
+    }
+
+    // Server-side seek for HLS
+    if (serverSeeking) return;
+    serverSeeking = true;
+    showSpinner();
+    video.pause();
+
+    var seekUrl = monitorrOrigin + '/api/cast/hls/' + hlsSessionId + '/seek?t=' + targetTime.toFixed(1);
+
+    fetch(seekUrl, { method: 'POST' })
+      .then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      })
+      .then(function (res) {
+        console.log(TAG, 'Server seek OK:', JSON.stringify(res));
+        seekOffset = res.offsetSeconds || targetTime;
+
+        var cacheBuster = Date.now().toString(36);
+        var reloadUrl = currentUrl.split('?')[0] + '?seek=' + cacheBuster;
+        currentUrl = reloadUrl;
+
+        hls.loadSource(reloadUrl);
+        hls.once(Hls.Events.MANIFEST_PARSED, function () {
+          video.currentTime = 0;
+          video.play().catch(function () {});
+          serverSeeking = false;
+          hideSpinner();
+          sendMediaStatus(senderId, reqId);
+          flashOverlay();
+        });
+      })
+      .catch(function (err) {
+        console.error(TAG, 'Server seek failed:', err);
+        serverSeeking = false;
+        hideSpinner();
+        video.play().catch(function () {});
+      });
+  }
+
+  // ── STOP ───────────────────────────────────────────────────────────────────
+
+  function handleStop(senderId, reqId) {
+    console.log(TAG, 'STOP');
+    destroyPlayer();
+    var status = buildMediaStatus(reqId, 'IDLE');
+    status.status[0].idleReason = 'CANCELLED';
+    sendRaw(senderId, status);
+    showIdle();
+  }
+
+  // ── HLS.js ─────────────────────────────────────────────────────────────────
+
+  function loadHls(url, onReady) {
+    if (hls) { hls.destroy(); hls = null; }
 
     hls = new Hls({
       enableWorker: false,
@@ -103,31 +232,108 @@
     hls.attachMedia(video);
 
     hls.on(Hls.Events.MANIFEST_PARSED, function () {
-      console.log(TAG, 'HLS manifest parsed');
+      console.log(TAG, 'HLS manifest parsed, video.duration:', video.duration);
       video.play().catch(function (e) { console.warn(TAG, 'autoplay:', e); });
-      if (realDuration <= 0) fetchDuration();
-      startStatusBroadcaster();
+      if (onReady) { onReady(); onReady = null; }
     });
 
     hls.on(Hls.Events.ERROR, function (_, data) {
       if (data.fatal) {
-        console.error(TAG, 'HLS fatal error:', data.type, data.details);
+        console.error(TAG, 'HLS fatal:', data.type, data.details);
         if (data.type === Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad();
         else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
       }
     });
-
-    console.log(TAG, 'HLS.js loading:', url);
   }
 
-  // Periodically push status to all senders so their UIs update with
-  // current time, duration, and player state.
+  function destroyPlayer() {
+    stopStatusBroadcaster();
+    if (hls) { hls.destroy(); hls = null; }
+    video.pause();
+    video.removeAttribute('src');
+    video.load();
+    seekOffset = 0;
+    currentUrl = null;
+  }
+
+  // ── MEDIA_STATUS Builder ───────────────────────────────────────────────────
+
+  function buildMediaStatus(reqId, stateOverride) {
+    var state = stateOverride || getPlayerState();
+    var currentTime = getCurrentTime();
+
+    var status = {
+      type: 'MEDIA_STATUS',
+      requestId: reqId || 0,
+      status: [{
+        mediaSessionId: mediaSessionId,
+        playbackRate: video.playbackRate || 1,
+        playerState: state,
+        currentTime: currentTime,
+        supportedMediaCommands: 0x3FFFF,
+        volume: { level: video.volume, muted: video.muted },
+        media: null
+      }]
+    };
+
+    if (currentUrl) {
+      status.status[0].media = {
+        contentId: currentUrl,
+        streamType: 'BUFFERED',
+        contentType: isHlsContent ? 'application/x-mpegURL' : 'video/mp4',
+        duration: realDuration > 0 ? realDuration : (isFinite(video.duration) ? video.duration : 0),
+        metadata: lastMetadata
+      };
+    }
+
+    return status;
+  }
+
+  function getPlayerState() {
+    if (!currentUrl) return 'IDLE';
+    if (serverSeeking || video.seeking || video.readyState < 3) return 'BUFFERING';
+    if (video.paused || video.ended) return 'PAUSED';
+    return 'PLAYING';
+  }
+
+  function getCurrentTime() {
+    if (!video || !currentUrl) return 0;
+    return seekOffset + (video.currentTime || 0);
+  }
+
+  // ── Send to senders ────────────────────────────────────────────────────────
+
+  function sendMediaStatus(senderId, reqId) {
+    var status = buildMediaStatus(reqId);
+    if (senderId) {
+      sendRaw(senderId, status);
+    } else {
+      broadcastMediaStatus(reqId);
+    }
+  }
+
+  function broadcastMediaStatus(reqId) {
+    var status = buildMediaStatus(reqId || 0);
+    var senders = context.getSenders();
+    for (var i = 0; i < senders.length; i++) {
+      try { sendRaw(senders[i].id, status); } catch (e) {}
+    }
+  }
+
+  function sendRaw(senderId, msg) {
+    try {
+      context.sendCustomMessage(MEDIA_NS, senderId, msg);
+    } catch (e) {
+      console.warn(TAG, 'Send failed:', e.message);
+    }
+  }
+
+  // ── Status Broadcaster ─────────────────────────────────────────────────────
+
   function startStatusBroadcaster() {
     stopStatusBroadcaster();
     statusTimer = setInterval(function () {
-      try {
-        playerManager.broadcastStatus();
-      } catch (e) {}
+      broadcastMediaStatus(0);
     }, 2000);
   }
 
@@ -135,184 +341,22 @@
     if (statusTimer) { clearInterval(statusTimer); statusTimer = null; }
   }
 
-  // ── PAUSE / PLAY Interceptors ───────────────────────────────────────────────
-
-  playerManager.setMessageInterceptor(
-    cast.framework.messages.MessageType.PAUSE,
-    function (request) {
-      console.log(TAG, 'PAUSE');
-      video.pause();
-      playerManager.broadcastStatus();
-      return request;
-    }
-  );
-
-  playerManager.setMessageInterceptor(
-    cast.framework.messages.MessageType.PLAY,
-    function (request) {
-      console.log(TAG, 'PLAY');
-      video.play().catch(function () {});
-      playerManager.broadcastStatus();
-      return request;
-    }
-  );
-
-  // ── SEEK Interceptor ───────────────────────────────────────────────────────
-  // For HLS: call server to restart FFmpeg, then reload HLS.js source in-place.
-  // No new media session. No app restart. Just like the web overlay does.
-
-  playerManager.setMessageInterceptor(
-    cast.framework.messages.MessageType.SEEK,
-    function (request) {
-      var targetTime = request.currentTime;
-      console.log(TAG, 'SEEK to', targetTime, 'hls:', isHlsContent);
-
-      if (!isHlsContent || !hlsSessionId || !monitorrOrigin || !hls) {
-        return request;
-      }
-
-      if (serverSeeking) {
-        console.log(TAG, 'SEEK debounced');
-        return null;
-      }
-
-      serverSeek(targetTime);
-      return null;
-    }
-  );
-
-  function serverSeek(targetTime) {
-    serverSeeking = true;
-    console.log(TAG, 'Server seek to', targetTime);
-
-    video.pause();
-
-    var seekUrl = monitorrOrigin + '/api/cast/hls/' + hlsSessionId + '/seek?t=' + targetTime.toFixed(1);
-
-    fetch(seekUrl, { method: 'POST' })
-      .then(function (resp) {
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
-        return resp.json();
-      })
-      .then(function (data) {
-        console.log(TAG, 'Server seek OK:', JSON.stringify(data));
-        if (!data.seeked) throw new Error('Server refused seek');
-
-        // Reload the HLS source -- same as web overlay's hlsReload()
-        if (hls) {
-          var cacheBuster = Date.now().toString(36);
-          var reloadUrl = currentContentUrl.split('?')[0] + '?seek=' + cacheBuster;
-          currentContentUrl = reloadUrl;
-
-          console.log(TAG, 'Reloading HLS source:', reloadUrl);
-          hls.loadSource(reloadUrl);
-
-          // Wait for the new manifest to be parsed, then play
-          hls.once(Hls.Events.MANIFEST_PARSED, function () {
-            video.currentTime = 0;
-            video.play().catch(function () {});
-            serverSeeking = false;
-            playerManager.broadcastStatus();
-            console.log(TAG, 'Seek reload complete');
-          });
-        } else {
-          serverSeeking = false;
-        }
-      })
-      .catch(function (err) {
-        console.error(TAG, 'Server seek failed:', err);
-        serverSeeking = false;
-        video.play().catch(function () {});
-      });
-  }
-
-  // ── MEDIA_STATUS Interceptor ───────────────────────────────────────────────
-
-  playerManager.setMessageInterceptor(
-    cast.framework.messages.MessageType.MEDIA_STATUS,
-    function (msg) {
-      if (msg.status) {
-        for (var i = 0; i < msg.status.length; i++) {
-          var s = msg.status[i];
-          s.supportedMediaCommands = ALL_COMMANDS;
-          // Inject current time and player state from the video element
-          if (video && !video.paused && !video.ended) {
-            s.currentTime = video.currentTime;
-            s.playerState = cast.framework.messages.PlayerState.PLAYING;
-          } else if (video && video.paused) {
-            s.currentTime = video.currentTime;
-            s.playerState = cast.framework.messages.PlayerState.PAUSED;
-          }
-          if (s.media) {
-            if (realDuration > 0) s.media.duration = realDuration;
-            s.media.streamType = cast.framework.messages.StreamType.BUFFERED;
-            s.media.supportedMediaCommands = ALL_COMMANDS;
-          }
-        }
-      }
-      return msg;
-    }
-  );
-
-  // ── Player Events ──────────────────────────────────────────────────────────
-
-  playerManager.addEventListener(
-    cast.framework.events.EventType.PLAYER_LOAD_COMPLETE,
-    function () {
-      console.log(TAG, 'Load complete, realDuration:', realDuration);
-      if (realDuration <= 0) fetchDuration();
-
-      var mediaInfo = playerManager.getMediaInformation();
-      if (mediaInfo) {
-        if (realDuration > 0) mediaInfo.duration = realDuration;
-        mediaInfo.streamType = cast.framework.messages.StreamType.BUFFERED;
-        mediaInfo.supportedMediaCommands = ALL_COMMANDS;
-      }
-
-      playerManager.setSupportedMediaCommands(ALL_COMMANDS, true);
-      playerManager.broadcastStatus();
-    }
-  );
-
-  playerManager.addEventListener(
-    cast.framework.events.EventType.MEDIA_FINISHED,
-    function () {
-      if (serverSeeking) return;
-      console.log(TAG, 'Media finished');
-      stopStatusBroadcaster();
-      if (hls) { hls.destroy(); hls = null; }
-      resetState();
-      setIdleVisible(true);
-    }
-  );
-
-  // Also listen directly on the video element for ended
-  video.addEventListener('ended', function () {
-    if (serverSeeking) return;
-    console.log(TAG, 'Video ended');
-    stopStatusBroadcaster();
-  });
-
-  playerManager.addEventListener(
-    cast.framework.events.EventType.ERROR,
-    function (event) {
-      console.error(TAG, 'Error:', event.detailedErrorCode, event.error);
-    }
-  );
-
   // ── Duration Fetching ──────────────────────────────────────────────────────
 
   function fetchDuration() {
     if (!hlsSessionId || !monitorrOrigin) return;
-    var infoUrl = monitorrOrigin + '/api/cast/hls/' + hlsSessionId + '/info';
-    console.log(TAG, 'Fetching duration from', infoUrl);
+    var url = monitorrOrigin + '/api/cast/hls/' + hlsSessionId + '/info';
 
-    fetch(infoUrl)
+    fetch(url)
       .then(function (r) { return r.json(); })
       .then(function (info) {
         if (info.durationSeconds > 0) {
-          console.log(TAG, 'Duration from server:', info.durationSeconds + 's');
-          applyDuration(info.durationSeconds);
+          realDuration = info.durationSeconds;
+          console.log(TAG, 'Duration:', realDuration + 's');
+          if (info.startOffsetSeconds > 0 && seekOffset === 0) {
+            seekOffset = info.startOffsetSeconds;
+          }
+          broadcastMediaStatus(0);
         } else {
           setTimeout(fetchDuration, 3000);
         }
@@ -320,48 +364,91 @@
       .catch(function () { setTimeout(fetchDuration, 5000); });
   }
 
-  function applyDuration(dur) {
-    realDuration = dur;
-    var mediaInfo = playerManager.getMediaInformation();
-    if (mediaInfo) mediaInfo.duration = dur;
-    playerManager.broadcastStatus();
-    console.log(TAG, 'Duration applied:', dur + 's');
-  }
+  // ── UI Updates ─────────────────────────────────────────────────────────────
 
-  // ── Metadata Display ──────────────────────────────────────────────────────
+  video.addEventListener('timeupdate', updateOverlayProgress);
+  video.addEventListener('ended', function () {
+    if (serverSeeking) return;
+    broadcastMediaStatus(0);
+    destroyPlayer();
+    showIdle();
+  });
 
-  function updateMetadataDisplay() {
-    var titleEl = document.getElementById('meta-title');
-    var subtitleEl = document.getElementById('meta-subtitle');
-    var posterEl = document.getElementById('meta-poster');
-
-    if (lastMetadata) {
-      if (titleEl) titleEl.textContent = lastMetadata.title || '';
-      if (subtitleEl) subtitleEl.textContent = lastMetadata.subtitle || '';
-      if (lastMetadata.images && lastMetadata.images.length > 0 && posterEl) {
-        posterEl.src = lastMetadata.images[0].url;
-        posterEl.style.display = 'block';
-      }
+  function updateOverlayProgress() {
+    var total = realDuration > 0 ? realDuration : (isFinite(video.duration) ? video.duration : 0);
+    var current = getCurrentTime();
+    if (timeLeft) timeLeft.textContent = formatTime(current);
+    if (timeRight) timeRight.textContent = formatTime(total);
+    if (total > 0 && seekPlayed) {
+      seekPlayed.style.width = Math.min(100, (current / total) * 100) + '%';
+    }
+    // Buffered indicator
+    if (seekBuffered && total > 0) {
+      var bufferedEnd = seekOffset + getTranscodedDuration();
+      seekBuffered.style.width = Math.min(100, (bufferedEnd / total) * 100) + '%';
     }
   }
 
-  // ── Custom Namespace ───────────────────────────────────────────────────────
+  function getTranscodedDuration() {
+    if (!video) return 0;
+    var d = video.duration;
+    return (isFinite(d) && d > 0) ? d : 0;
+  }
 
-  context.addCustomMessageListener(NAMESPACE, function (event) {
+  function updateMetadata() {
+    if (!lastMetadata) return;
+    if (metaTitle) metaTitle.textContent = lastMetadata.title || '';
+    if (metaSubtitle) metaSubtitle.textContent = lastMetadata.subtitle || '';
+    if (lastMetadata.images && lastMetadata.images.length > 0 && metaPoster) {
+      metaPoster.src = lastMetadata.images[0].url;
+      metaPoster.style.display = 'block';
+    } else if (metaPoster) {
+      metaPoster.style.display = 'none';
+    }
+  }
+
+  function flashOverlay() {
+    if (overlay) overlay.classList.add('visible');
+    clearTimeout(overlayTimer);
+    overlayTimer = setTimeout(function () {
+      if (overlay) overlay.classList.remove('visible');
+    }, 6000);
+  }
+
+  function showPlayer() {
+    if (idleScreen) idleScreen.style.display = 'none';
+    if (playerScreen) playerScreen.style.display = 'block';
+  }
+
+  function showIdle() {
+    if (playerScreen) playerScreen.style.display = 'none';
+    if (idleScreen) idleScreen.style.display = 'flex';
+  }
+
+  function showSpinner() { if (spinner) spinner.style.display = 'flex'; }
+  function hideSpinner() { if (spinner) spinner.style.display = 'none'; }
+
+  function formatTime(s) {
+    if (!s || !isFinite(s)) return '0:00';
+    s = Math.max(0, Math.floor(s));
+    var h = Math.floor(s / 3600);
+    var m = Math.floor((s % 3600) / 60);
+    var ss = s % 60;
+    return h > 0
+      ? h + ':' + (m < 10 ? '0' : '') + m + ':' + (ss < 10 ? '0' : '') + ss
+      : m + ':' + (ss < 10 ? '0' : '') + ss;
+  }
+
+  // ── Monitorr Custom Namespace ──────────────────────────────────────────────
+
+  context.addCustomMessageListener(MONITORR_NS, function (event) {
     var data = event.data;
-    console.log(TAG, 'Custom:', data.type);
-
-    switch (data.type) {
-      case 'PING':
-        context.sendCustomMessage(NAMESPACE, event.senderId, {
-          type: 'PONG',
-          version: VERSION,
-          currentTime: video.currentTime,
-          duration: realDuration,
-          hlsSessionId: hlsSessionId,
-          playerState: playerManager.getPlayerState()
-        });
-        break;
+    if (data.type === 'PING') {
+      context.sendCustomMessage(MONITORR_NS, event.senderId, {
+        type: 'PONG', version: VERSION,
+        currentTime: getCurrentTime(), duration: realDuration,
+        hlsSessionId: hlsSessionId, playerState: getPlayerState()
+      });
     }
   });
 
@@ -369,54 +456,35 @@
 
   context.addEventListener(
     cast.framework.system.EventType.SENDER_CONNECTED,
-    function (event) { console.log(TAG, 'Sender connected:', event.senderId); }
+    function (event) {
+      console.log(TAG, 'Sender connected:', event.senderId);
+      if (currentUrl) sendMediaStatus(event.senderId, 0);
+    }
   );
 
   context.addEventListener(
     cast.framework.system.EventType.SENDER_DISCONNECTED,
     function (event) {
       console.log(TAG, 'Sender disconnected:', event.senderId);
-      if (context.getSenders().length === 0 &&
-          playerManager.getPlayerState() === cast.framework.messages.PlayerState.IDLE) {
-        if (hls) { hls.destroy(); hls = null; }
+      if (context.getSenders().length === 0) {
+        destroyPlayer();
         context.stop();
       }
     }
   );
 
-  // ── Helpers ────────────────────────────────────────────────────────────────
-
-  function resetState() {
-    realDuration = 0;
-    isHlsContent = false;
-    hlsSessionId = null;
-    monitorrOrigin = null;
-    currentContentUrl = null;
-    serverSeeking = false;
-    lastMetadata = null;
-  }
-
-  function setIdleVisible(visible) {
-    var el = document.getElementById('monitorr-idle');
-    if (el) el.style.display = visible ? 'flex' : 'none';
-    var wm = document.getElementById('monitorr-watermark');
-    if (wm) wm.style.display = visible ? 'none' : 'flex';
-    var playerEl = document.getElementById('monitorr-player');
-    if (playerEl) playerEl.style.display = visible ? 'none' : 'flex';
-  }
-
   // ── Start ──────────────────────────────────────────────────────────────────
 
   var opts = new cast.framework.CastReceiverOptions();
-  opts.playbackConfig = playbackConfig;
-  opts.maxInactivity = 3600;
-  opts.supportedCommands = ALL_COMMANDS;
   opts.skipPlayersLoad = true;
+  opts.disableIdleTimeout = true;
+  opts.maxInactivity = 3600;
   opts.customNamespaces = {};
-  opts.customNamespaces[NAMESPACE] = cast.framework.system.MessageType.JSON;
+  opts.customNamespaces[MEDIA_NS] = cast.framework.system.MessageType.JSON;
+  opts.customNamespaces[MONITORR_NS] = cast.framework.system.MessageType.JSON;
 
   context.start(opts);
-  console.log(TAG, 'Receiver v' + VERSION + ' started');
-  setIdleVisible(true);
+  console.log(TAG, 'Receiver started');
+  showIdle();
 
 })();
