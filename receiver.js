@@ -9,7 +9,7 @@
 
 (function () {
 
-  var VERSION = '0.1.3';
+  var VERSION = '0.1.4';
   var TAG = '[Monitorr v' + VERSION + ']';
   var MEDIA_NS = 'urn:x-cast:com.google.cast.media';
   var MONITORR_NS = 'urn:x-cast:com.monitorr.cast';
@@ -194,36 +194,32 @@
         // 3. Load new source (video stays paused)
         hls.loadSource(reloadUrl);
 
-        hls.once(Hls.Events.MANIFEST_PARSED, function () {
-          // 4. Seek to start of new content, still paused
+        // 4. Wait for HLS.js to actually buffer a new fragment (not stale data)
+        hls.once(Hls.Events.FRAG_BUFFERED, function () {
+          // 5. New content is buffered. Set position and unpause in one shot.
           video.currentTime = 0;
 
-          // 5. Wait until enough data is buffered to play
-          function onCanPlay() {
-            video.removeEventListener('canplay', onCanPlay);
+          serverSeeking = false;
+          video.play().catch(function () {});
+          hideSpinner();
+          sendMediaStatus(senderId, reqId);
+          flashOverlay();
+          console.log(TAG, 'Seek complete, offset:', seekOffset);
+        });
 
-            // 6. Everything is ready. Single clean transition:
-            //    update status, unpause, hide spinner -- all at once.
+        // Start loading the new source (video stays paused)
+        hls.loadSource(reloadUrl);
+
+        // Safety: if FRAG_BUFFERED doesn't fire within 10s, force it
+        setTimeout(function () {
+          if (serverSeeking) {
             serverSeeking = false;
+            video.currentTime = 0;
             video.play().catch(function () {});
             hideSpinner();
             sendMediaStatus(senderId, reqId);
-            flashOverlay();
-            console.log(TAG, 'Seek complete, offset:', seekOffset);
           }
-          video.addEventListener('canplay', onCanPlay);
-
-          // Safety: if canplay doesn't fire within 8s, force it
-          setTimeout(function () {
-            video.removeEventListener('canplay', onCanPlay);
-            if (serverSeeking) {
-              serverSeeking = false;
-              video.play().catch(function () {});
-              hideSpinner();
-              sendMediaStatus(senderId, reqId);
-            }
-          }, 8000);
-        });
+        }, 10000);
       })
       .catch(function (err) {
         console.error(TAG, 'Server seek failed:', err);
