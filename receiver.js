@@ -74,13 +74,21 @@
       } catch (e) { monitorrOrigin = null; }
 
       if (isHlsContent) {
-        // Normalize segment format enums (sender sends raw "fmp4" strings)
         media.hlsSegmentFormat = cast.framework.messages.HlsSegmentFormat.FMP4;
         media.hlsVideoSegmentFormat = cast.framework.messages.HlsVideoSegmentFormat.FMP4;
         media.streamType = cast.framework.messages.StreamType.BUFFERED;
       }
 
-      // Hide idle screen, show watermark
+      // Force BUFFERED stream type and ensure duration is set so the player
+      // treats this as seekable VOD, not a live/event stream.
+      media.streamType = cast.framework.messages.StreamType.BUFFERED;
+
+      // Explicitly enable seek + all basic media commands on the media itself
+      var CMD = cast.framework.messages.Command;
+      request.media.supportedMediaCommands =
+        CMD.PAUSE | CMD.SEEK | CMD.STREAM_VOLUME | CMD.STREAM_MUTE |
+        CMD.STREAM_TRANSFER;
+
       setIdleVisible(false);
 
       return request;
@@ -116,11 +124,18 @@
   playerManager.setMessageInterceptor(
     cast.framework.messages.MessageType.MEDIA_STATUS,
     function (statusMessage) {
-      if (realDuration > 0 && statusMessage.status) {
+      var CMD = cast.framework.messages.Command;
+      var seekCommands = CMD.PAUSE | CMD.SEEK | CMD.STREAM_VOLUME | CMD.STREAM_MUTE | CMD.STREAM_TRANSFER;
+
+      if (statusMessage.status) {
         for (var i = 0; i < statusMessage.status.length; i++) {
           var s = statusMessage.status[i];
+          // Force seek support on every status broadcast
+          s.supportedMediaCommands = seekCommands;
           if (s.media) {
-            s.media.duration = realDuration;
+            if (realDuration > 0) s.media.duration = realDuration;
+            s.media.streamType = cast.framework.messages.StreamType.BUFFERED;
+            s.media.supportedMediaCommands = seekCommands;
           }
         }
       }
@@ -135,14 +150,34 @@
     function () {
       console.log(TAG, 'Load complete, duration:', realDuration);
 
-      // Patch media information with real duration and re-broadcast
-      if (realDuration > 0) {
-        var mediaInfo = playerManager.getMediaInformation();
-        if (mediaInfo) {
+      var mediaInfo = playerManager.getMediaInformation();
+      if (mediaInfo) {
+        // Override duration so seek bar shows full movie length
+        if (realDuration > 0) {
           mediaInfo.duration = realDuration;
-          playerManager.broadcastStatus();
         }
+        // Force BUFFERED so the player treats it as seekable VOD
+        mediaInfo.streamType = cast.framework.messages.StreamType.BUFFERED;
+
+        // Force supported media commands to include SEEK
+        var CMD = cast.framework.messages.Command;
+        mediaInfo.supportedMediaCommands =
+          CMD.PAUSE | CMD.SEEK | CMD.STREAM_VOLUME | CMD.STREAM_MUTE |
+          CMD.STREAM_TRANSFER;
       }
+
+      // Also set at the player manager level
+      playerManager.setSupportedMediaCommands(
+        cast.framework.messages.Command.PAUSE |
+        cast.framework.messages.Command.SEEK |
+        cast.framework.messages.Command.STREAM_VOLUME |
+        cast.framework.messages.Command.STREAM_MUTE |
+        cast.framework.messages.Command.STREAM_TRANSFER,
+        true
+      );
+
+      playerManager.broadcastStatus();
+      console.log(TAG, 'Broadcast status with seek enabled, duration:', realDuration);
     }
   );
 
