@@ -1,5 +1,5 @@
 /* ══════════════════════════════════════════════════════════════════════════════
-   Monitorr Cast Receiver v0.0.6
+   Monitorr Cast Receiver v0.0.7
    ══════════════════════════════════════════════════════════════════════════════ */
 
 :root {
@@ -12,7 +12,6 @@
   --mr-text-dim:    #a0a3b1;
   --mr-text-faint:  rgba(255, 255, 255, 0.3);
   --mr-border:      rgba(197, 202, 233, 0.12);
-  --mr-success:     #4caf50;
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -26,16 +25,73 @@ html, body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* ── Cast Media Player ──────────────────────────────────────────────────────── */
+/* ── Custom Player ──────────────────────────────────────────────────────────── */
 
-cast-media-player {
-  --bounding-box-color:   transparent;
-  --background-color:     var(--mr-bg);
-  --progress-color:       var(--mr-accent);
-  --splash-color:         var(--mr-primary);
-  --splash-size:          180px;
-  --font-family:          'Inter', -apple-system, sans-serif;
-  --playback-logo-image:  none;
+#monitorr-player {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+  z-index: 1;
+}
+
+#monitorr-video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+}
+
+/* ── Metadata Overlay (bottom-left, auto-hides) ─────────────────────────────── */
+
+#meta-overlay {
+  position: fixed;
+  bottom: 40px;
+  left: 40px;
+  z-index: 10;
+  display: flex;
+  align-items: flex-end;
+  gap: 16px;
+  opacity: 1;
+  transition: opacity 0.5s ease;
+  pointer-events: none;
+  animation: meta-fade 8s ease forwards;
+}
+
+@keyframes meta-fade {
+  0%, 60% { opacity: 1; }
+  100%    { opacity: 0; }
+}
+
+#meta-poster {
+  display: none;
+  width: 80px;
+  height: 120px;
+  border-radius: 6px;
+  object-fit: cover;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.6);
+}
+
+#meta-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+#meta-title {
+  font-size: 1.4rem;
+  font-weight: 600;
+  color: var(--mr-text);
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.7);
+}
+
+#meta-subtitle {
+  font-size: 0.85rem;
+  font-weight: 400;
+  color: var(--mr-text-dim);
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.7);
 }
 
 /* ── Idle Screen ────────────────────────────────────────────────────────────── */
@@ -120,7 +176,6 @@ cast-media-player {
   font-size: 0.85rem;
   font-weight: 600;
   color: rgba(255, 255, 255, 0.1);
-  letter-spacing: 0.02em;
 }
 
 .wm-ver {
@@ -128,5 +183,4 @@ cast-media-player {
   font-size: 0.55rem;
   font-weight: 500;
   color: rgba(255, 255, 255, 0.06);
-  letter-spacing: 0.05em;
 }
