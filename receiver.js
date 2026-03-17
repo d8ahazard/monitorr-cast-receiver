@@ -1,16 +1,23 @@
 'use strict';
 
-// ─── Monitorr Cast Receiver v0.0.5 ──────────────────────────────────────────
+// ─── Monitorr Cast Receiver v0.0.6 ──────────────────────────────────────────
 //
-// Server-side seeking: SEEK is intercepted, POSTed to the Monitorr server to
-// restart FFmpeg at the requested offset, then the player source is reloaded.
-// Duration is fetched from the server info endpoint (authoritative) with
-// fallback to the HLS manifest duration.
+// Architecture:
+//   - HLS EVENT playlists are left intact (no manifest hacking). The internal
+//     Shaka player polls the growing manifest and consumes new segments as
+//     FFmpeg produces them.
+//   - Duration and supportedMediaCommands are overridden in MEDIA_STATUS so
+//     sender UIs (Google Home, phone remotes) show the full movie length and
+//     a seek bar.
+//   - SEEK is intercepted: POSTs to the Monitorr server to restart FFmpeg at
+//     the requested offset, then reloads the player with a fresh manifest.
+//   - Duration is fetched from the server info endpoint (which probes with
+//     ffprobe if the DB doesn't have it).
 // ─────────────────────────────────────────────────────────────────────────────
 
 (function () {
 
-  var VERSION = '0.0.5';
+  var VERSION = '0.0.6';
   var NAMESPACE = 'urn:x-cast:com.monitorr.cast';
   var TAG = '[Monitorr v' + VERSION + ']';
 
@@ -36,17 +43,8 @@
   playbackConfig.autoResumeDuration = 5;
   playbackConfig.initialBandwidthEstimate = 5000000;
 
-  // Patch HLS manifests: EVENT -> VOD + inject ENDLIST so Shaka treats the
-  // on-demand transcode output as seekable VOD.
-  playbackConfig.manifestHandler = function (manifest) {
-    if (manifest && manifest.indexOf('#EXTINF') !== -1) {
-      manifest = manifest.replace('#EXT-X-PLAYLIST-TYPE:EVENT', '#EXT-X-PLAYLIST-TYPE:VOD');
-      if (manifest.indexOf('#EXT-X-ENDLIST') === -1) {
-        manifest = manifest.trimEnd() + '\n#EXT-X-ENDLIST\n';
-      }
-    }
-    return manifest;
-  };
+  // No manifest manipulation -- let the EVENT playlist work naturally so the
+  // player keeps fetching new segments as FFmpeg produces them.
 
   // ── LOAD Interceptor ───────────────────────────────────────────────────────
 
@@ -59,7 +57,6 @@
       var url = media.contentId || media.contentUrl || '';
       console.log(TAG, 'LOAD', url, 'duration:', media.duration);
 
-      // Store duration from sender (may be null/0 if DB doesn't have it)
       if (media.duration > 0) realDuration = media.duration;
       currentContentUrl = url;
 
@@ -77,22 +74,20 @@
         media.hlsVideoSegmentFormat = cast.framework.messages.HlsVideoSegmentFormat.FMP4;
       }
 
+      // Tell the protocol layer this is seekable BUFFERED content
       media.streamType = cast.framework.messages.StreamType.BUFFERED;
       media.supportedMediaCommands = ALL_COMMANDS;
-
-      // Preserve metadata for reloads after seek
       if (media.metadata) lastMetadata = media.metadata;
 
       setIdleVisible(false);
       serverSeeking = false;
 
+      console.log(TAG, 'LOAD: hls=' + isHlsContent + ' dur=' + realDuration + ' session=' + hlsSessionId);
       return request;
     }
   );
 
   // ── SEEK Interceptor ───────────────────────────────────────────────────────
-  // For HLS: suppress default seek, POST to server, reload player source.
-  // For direct play (MP4): pass through normally.
 
   playerManager.setMessageInterceptor(
     cast.framework.messages.MessageType.SEEK,
@@ -100,12 +95,13 @@
       var targetTime = request.currentTime;
       console.log(TAG, 'SEEK to', targetTime, 'hls:', isHlsContent);
 
+      // DirectPlay (MP4): let the default seek handle it
       if (!isHlsContent || !hlsSessionId || !monitorrOrigin) {
         return request;
       }
 
       if (serverSeeking) {
-        console.log(TAG, 'SEEK debounced -- already in progress');
+        console.log(TAG, 'SEEK debounced');
         return null;
       }
 
@@ -118,12 +114,6 @@
     serverSeeking = true;
     console.log(TAG, 'Server seek to', targetTime);
 
-    // Pause current playback but don't show idle screen
-    try {
-      var el = playerManager.getMediaElement();
-      if (el) el.pause();
-    } catch (e) {}
-
     var seekUrl = monitorrOrigin + '/api/cast/hls/' + hlsSessionId + '/seek?t=' + targetTime.toFixed(1);
 
     fetch(seekUrl, { method: 'POST' })
@@ -132,18 +122,14 @@
         return resp.json();
       })
       .then(function (data) {
-        console.log(TAG, 'Server seek OK:', JSON.stringify(data));
+        console.log(TAG, 'Server seek response:', JSON.stringify(data));
+        if (!data.seeked) throw new Error('Server refused seek');
 
-        if (!data.seeked) {
-          console.error(TAG, 'Server refused seek');
-          serverSeeking = false;
-          return;
-        }
-
-        // Reload the player with fresh HLS manifest from the new offset
         var cacheBuster = Date.now().toString(36);
         var reloadUrl = currentContentUrl.split('?')[0] + '?seek=' + cacheBuster;
-        console.log(TAG, 'Reloading:', reloadUrl);
+        currentContentUrl = reloadUrl;
+
+        console.log(TAG, 'Reloading player:', reloadUrl);
 
         var loadReq = new cast.framework.messages.LoadRequestData();
         loadReq.media = new cast.framework.messages.MediaInformation();
@@ -158,9 +144,6 @@
         loadReq.autoplay = true;
         loadReq.currentTime = 0;
 
-        // Update currentContentUrl for future seeks
-        currentContentUrl = reloadUrl;
-
         return playerManager.load(loadReq);
       })
       .then(function () {
@@ -170,15 +153,12 @@
       .catch(function (err) {
         console.error(TAG, 'Server seek failed:', err);
         serverSeeking = false;
-        // Try to resume playback from where we were
-        try {
-          var el = playerManager.getMediaElement();
-          if (el) el.play();
-        } catch (e) {}
       });
   }
 
   // ── MEDIA_STATUS Interceptor ───────────────────────────────────────────────
+  // Override duration and commands on every outgoing status so sender UIs
+  // show the full movie seek bar regardless of the HLS manifest's duration.
 
   playerManager.setMessageInterceptor(
     cast.framework.messages.MessageType.MEDIA_STATUS,
@@ -205,7 +185,7 @@
     function () {
       console.log(TAG, 'Load complete, realDuration:', realDuration);
 
-      // If we don't have duration yet, try to get it from the server or player
+      // Fetch duration from server if we don't have it yet
       if (realDuration <= 0) fetchDuration();
 
       var mediaInfo = playerManager.getMediaInformation();
@@ -223,7 +203,6 @@
   playerManager.addEventListener(
     cast.framework.events.EventType.MEDIA_FINISHED,
     function () {
-      // Don't show idle during server seek reloads
       if (serverSeeking) return;
       console.log(TAG, 'Media finished');
       resetState();
@@ -239,16 +218,12 @@
   );
 
   // ── Duration Fetching ──────────────────────────────────────────────────────
-  // Mirror of the web overlay's _pollDurationFromSession logic.
-  // If the sender didn't provide duration, fetch from server info endpoint.
-  // If that's also 0, use the player's own duration as a last resort.
 
   function fetchDuration() {
     if (!hlsSessionId || !monitorrOrigin) {
       fallbackToPlayerDuration();
       return;
     }
-
     var infoUrl = monitorrOrigin + '/api/cast/hls/' + hlsSessionId + '/info';
     console.log(TAG, 'Fetching duration from', infoUrl);
 
@@ -256,39 +231,35 @@
       .then(function (r) { return r.json(); })
       .then(function (info) {
         if (info.durationSeconds > 0) {
-          console.log(TAG, 'Duration from server:', info.durationSeconds);
-          setRealDuration(info.durationSeconds);
+          console.log(TAG, 'Duration from server:', info.durationSeconds + 's');
+          applyDuration(info.durationSeconds);
         } else {
-          console.log(TAG, 'Server duration is 0, using player duration');
-          fallbackToPlayerDuration();
+          console.log(TAG, 'Server duration 0, retrying in 3s');
+          setTimeout(fetchDuration, 3000);
         }
       })
-      .catch(function () { fallbackToPlayerDuration(); });
+      .catch(function () {
+        fallbackToPlayerDuration();
+      });
   }
 
   function fallbackToPlayerDuration() {
     try {
       var el = playerManager.getMediaElement();
-      if (el && isFinite(el.duration) && el.duration > 0) {
-        console.log(TAG, 'Player duration:', el.duration);
-        setRealDuration(el.duration);
+      if (el && isFinite(el.duration) && el.duration > 10) {
+        applyDuration(el.duration);
       } else {
-        console.log(TAG, 'No duration available, will retry in 5s');
         setTimeout(fetchDuration, 5000);
       }
-    } catch (e) {
-      console.warn(TAG, 'Duration fallback error:', e);
-    }
+    } catch (e) {}
   }
 
-  function setRealDuration(dur) {
+  function applyDuration(dur) {
     realDuration = dur;
     var mediaInfo = playerManager.getMediaInformation();
-    if (mediaInfo) {
-      mediaInfo.duration = dur;
-    }
+    if (mediaInfo) mediaInfo.duration = dur;
     playerManager.broadcastStatus();
-    console.log(TAG, 'Duration set to', dur);
+    console.log(TAG, 'Duration applied:', dur + 's');
   }
 
   // ── Custom Namespace ───────────────────────────────────────────────────────
