@@ -9,7 +9,7 @@
 
 (function () {
 
-  var VERSION = '0.0.7';
+  var VERSION = '0.0.8';
   var NAMESPACE = 'urn:x-cast:com.monitorr.cast';
   var TAG = '[Monitorr v' + VERSION + ']';
 
@@ -84,6 +84,8 @@
     }
   );
 
+  var statusTimer = null;
+
   function loadWithHlsJs(url) {
     if (hls) {
       hls.destroy();
@@ -104,6 +106,7 @@
       console.log(TAG, 'HLS manifest parsed');
       video.play().catch(function (e) { console.warn(TAG, 'autoplay:', e); });
       if (realDuration <= 0) fetchDuration();
+      startStatusBroadcaster();
     });
 
     hls.on(Hls.Events.ERROR, function (_, data) {
@@ -116,6 +119,43 @@
 
     console.log(TAG, 'HLS.js loading:', url);
   }
+
+  // Periodically push status to all senders so their UIs update with
+  // current time, duration, and player state.
+  function startStatusBroadcaster() {
+    stopStatusBroadcaster();
+    statusTimer = setInterval(function () {
+      try {
+        playerManager.broadcastStatus();
+      } catch (e) {}
+    }, 2000);
+  }
+
+  function stopStatusBroadcaster() {
+    if (statusTimer) { clearInterval(statusTimer); statusTimer = null; }
+  }
+
+  // ── PAUSE / PLAY Interceptors ───────────────────────────────────────────────
+
+  playerManager.setMessageInterceptor(
+    cast.framework.messages.MessageType.PAUSE,
+    function (request) {
+      console.log(TAG, 'PAUSE');
+      video.pause();
+      playerManager.broadcastStatus();
+      return request;
+    }
+  );
+
+  playerManager.setMessageInterceptor(
+    cast.framework.messages.MessageType.PLAY,
+    function (request) {
+      console.log(TAG, 'PLAY');
+      video.play().catch(function () {});
+      playerManager.broadcastStatus();
+      return request;
+    }
+  );
 
   // ── SEEK Interceptor ───────────────────────────────────────────────────────
   // For HLS: call server to restart FFmpeg, then reload HLS.js source in-place.
@@ -195,6 +235,14 @@
         for (var i = 0; i < msg.status.length; i++) {
           var s = msg.status[i];
           s.supportedMediaCommands = ALL_COMMANDS;
+          // Inject current time and player state from the video element
+          if (video && !video.paused && !video.ended) {
+            s.currentTime = video.currentTime;
+            s.playerState = cast.framework.messages.PlayerState.PLAYING;
+          } else if (video && video.paused) {
+            s.currentTime = video.currentTime;
+            s.playerState = cast.framework.messages.PlayerState.PAUSED;
+          }
           if (s.media) {
             if (realDuration > 0) s.media.duration = realDuration;
             s.media.streamType = cast.framework.messages.StreamType.BUFFERED;
@@ -231,11 +279,19 @@
     function () {
       if (serverSeeking) return;
       console.log(TAG, 'Media finished');
+      stopStatusBroadcaster();
       if (hls) { hls.destroy(); hls = null; }
       resetState();
       setIdleVisible(true);
     }
   );
+
+  // Also listen directly on the video element for ended
+  video.addEventListener('ended', function () {
+    if (serverSeeking) return;
+    console.log(TAG, 'Video ended');
+    stopStatusBroadcaster();
+  });
 
   playerManager.addEventListener(
     cast.framework.events.EventType.ERROR,
