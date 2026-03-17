@@ -10,7 +10,7 @@
 
 (function () {
 
-  var VERSION = '0.2.0';
+  var VERSION = '0.2.1';
   var TAG = '[Monitorr v' + VERSION + ']';
   var MEDIA_NS = 'urn:x-cast:com.google.cast.media';
   var MONITORR_NS = 'urn:x-cast:com.monitorr.cast';
