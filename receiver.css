@@ -1,0 +1,111 @@
+/* ══════════════════════════════════════════════════════════════════════════════
+   Monitorr Cast Receiver Theme
+   Matches the Monitorr "indigo" dark theme on Cast devices.
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+:root {
+  --mr-bg:          #0d1117;
+  --mr-surface:     #161b2e;
+  --mr-primary:     #3f51b5;
+  --mr-accent:      #03a9f4;
+  --mr-accent-dark: #0288d1;
+  --mr-text:        #ecedf0;
+  --mr-text-dim:    #a0a3b1;
+  --mr-text-faint:  rgba(255, 255, 255, 0.3);
+  --mr-border:      rgba(197, 202, 233, 0.12);
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--mr-bg);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── Cast Media Player ──────────────────────────────────────────────────────── */
+
+cast-media-player {
+  --bounding-box-color:   transparent;
+  --background-color:     var(--mr-bg);
+  --progress-color:       var(--mr-accent);
+  --splash-color:         var(--mr-primary);
+  --splash-size:          180px;
+  --font-family:          'Inter', -apple-system, sans-serif;
+  --playback-logo-image:  none;
+}
+
+/* ── Idle Screen ────────────────────────────────────────────────────────────── */
+
+#monitorr-idle {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #0a0e1a 0%, #0d1117 40%, #111827 100%);
+  pointer-events: none;
+}
+
+.idle-brand {
+  font-size: 4rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--mr-text);
+  background: linear-gradient(135deg, var(--mr-primary), var(--mr-accent));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  animation: idle-glow 4s ease-in-out infinite alternate;
+}
+
+.idle-status {
+  margin-top: 1rem;
+  font-size: 1rem;
+  font-weight: 400;
+  color: var(--mr-text-dim);
+  letter-spacing: 0.04em;
+}
+
+@keyframes idle-glow {
+  0%   { opacity: 0.8; }
+  100% { opacity: 1; }
+}
+
+/* Subtle animated accent line below the brand */
+.idle-brand::after {
+  content: '';
+  display: block;
+  width: 60px;
+  height: 2px;
+  margin: 0.75rem auto 0;
+  background: var(--mr-accent);
+  border-radius: 1px;
+  animation: idle-line 3s ease-in-out infinite;
+}
+
+@keyframes idle-line {
+  0%, 100% { width: 60px; opacity: 0.5; }
+  50%      { width: 120px; opacity: 1; }
+}
+
+/* ── Playback Watermark ─────────────────────────────────────────────────────── */
+
+#monitorr-watermark {
+  position: fixed;
+  top: 24px;
+  right: 28px;
+  z-index: 50;
+  font-family: 'Inter', sans-serif;
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.12);
+  letter-spacing: 0.02em;
+  pointer-events: none;
+  display: none;
+}
