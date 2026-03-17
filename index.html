@@ -23,10 +23,11 @@
       <div class="mr-spinner-ring"></div>
     </div>
 
-    <!-- Bottom overlay (auto-hides) -->
+    <!-- Bottom overlay -->
     <div id="mr-overlay">
       <div class="mr-gradient"></div>
       <div class="mr-bottom">
+
         <!-- Seek bar -->
         <div class="mr-seek-row">
           <span id="mr-time-left" class="mr-time">0:00</span>
@@ -36,16 +37,34 @@
           </div>
           <span id="mr-time-right" class="mr-time">--:--</span>
         </div>
-        <!-- Meta + controls row -->
-        <div class="mr-info-row">
+
+        <!-- Controls + metadata row -->
+        <div class="mr-controls-row">
+          <!-- Poster + metadata -->
           <img id="mr-poster" class="mr-poster" src="" alt="" style="display:none">
           <div class="mr-meta">
             <div id="mr-title" class="mr-title"></div>
             <div id="mr-subtitle" class="mr-subtitle"></div>
           </div>
+
+          <!-- Control buttons -->
+          <div class="mr-buttons">
+            <button id="mr-btn-skip-prev" class="mr-btn" style="display:none" title="Previous episode">
+              <span class="bi bi-skip-start-fill"></span>
+            </button>
+            <button id="mr-btn-cc" class="mr-btn" style="display:none" title="Subtitles">
+              <span class="bi bi-badge-cc-fill"></span>
+              <span id="mr-cc-label" class="mr-cc-label"></span>
+            </button>
+            <button id="mr-btn-skip-next" class="mr-btn" style="display:none" title="Next episode">
+              <span class="bi bi-skip-end-fill"></span>
+            </button>
+          </div>
+
+          <!-- Brand -->
           <div class="mr-brand">
             <span class="mr-brand-name">Monitorr</span>
-            <span class="mr-brand-ver">v0.1.4</span>
+            <span class="mr-brand-ver">v0.2.0</span>
           </div>
         </div>
       </div>
@@ -56,7 +75,7 @@
   <div id="mr-idle">
     <div class="idle-brand">Monitorr</div>
     <div class="idle-status">Ready to cast</div>
-    <div class="idle-version">v0.1.4</div>
+    <div class="idle-version">v0.2.0</div>
   </div>
 
   <script src="receiver.js"></script>

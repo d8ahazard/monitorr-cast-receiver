@@ -1,15 +1,16 @@
 'use strict';
 
-// ─── Monitorr Cast Receiver v0.1.0 ──────────────────────────────────────────
+// ─── Monitorr Cast Receiver v0.2.0 ──────────────────────────────────────────
 //
-// Fully custom receiver: HLS.js player, hand-crafted MEDIA_STATUS messages,
-// server-side seeking with seekOffset tracking, no dependency on PlayerManager
-// internal state or cast-media-player element.
+// - HLS.js destroy + re-create on seek (no attached-loadSource cascade)
+// - Hand-crafted MEDIA_STATUS on the media namespace
+// - Subtitle track cycling from server tracks.json
+// - Contextual skip buttons via LOAD customData
 // ─────────────────────────────────────────────────────────────────────────────
 
 (function () {
 
-  var VERSION = '0.1.4';
+  var VERSION = '0.2.0';
   var TAG = '[Monitorr v' + VERSION + ']';
   var MEDIA_NS = 'urn:x-cast:com.google.cast.media';
   var MONITORR_NS = 'urn:x-cast:com.monitorr.cast';
@@ -30,6 +31,10 @@
   var metaSubtitle = document.getElementById('mr-subtitle');
   var metaPoster = document.getElementById('mr-poster');
   var spinner = document.getElementById('mr-spinner');
+  var btnCC = document.getElementById('mr-btn-cc');
+  var btnSkipPrev = document.getElementById('mr-btn-skip-prev');
+  var btnSkipNext = document.getElementById('mr-btn-skip-next');
+  var ccLabel = document.getElementById('mr-cc-label');
 
   // ── State ──────────────────────────────────────────────────────────────────
 
@@ -41,42 +46,32 @@
   var hlsSessionId = null;
   var monitorrOrigin = null;
   var lastMetadata = null;
+  var customData = null;
   var serverSeeking = false;
   var statusTimer = null;
   var overlayTimer = null;
   var isHlsContent = false;
 
+  // Subtitles
+  var subtitleTracks = [];
+  var activeSubIndex = -1;
+
   // ── Media Namespace Listener ───────────────────────────────────────────────
-  // We handle ALL media messages ourselves instead of using PlayerManager.
 
   context.addCustomMessageListener(MEDIA_NS, function (event) {
     var data = event.data;
     var senderId = event.senderId;
     var reqId = data.requestId || 0;
 
-    console.log(TAG, 'Media msg:', data.type, 'from', senderId);
+    console.log(TAG, 'Media msg:', data.type);
 
     switch (data.type) {
-      case 'LOAD':
-        handleLoad(data, senderId, reqId);
-        break;
-      case 'PLAY':
-        video.play().catch(function () {});
-        sendMediaStatus(senderId, reqId);
-        break;
-      case 'PAUSE':
-        video.pause();
-        sendMediaStatus(senderId, reqId);
-        break;
-      case 'STOP':
-        handleStop(senderId, reqId);
-        break;
-      case 'SEEK':
-        handleSeek(data, senderId, reqId);
-        break;
-      case 'GET_STATUS':
-        sendMediaStatus(senderId, reqId);
-        break;
+      case 'LOAD':        handleLoad(data, senderId, reqId); break;
+      case 'PLAY':        video.play().catch(function () {}); sendMediaStatus(senderId, reqId); break;
+      case 'PAUSE':       video.pause(); sendMediaStatus(senderId, reqId); break;
+      case 'STOP':        handleStop(senderId, reqId); break;
+      case 'SEEK':        handleSeek(data, senderId, reqId); break;
+      case 'GET_STATUS':  sendMediaStatus(senderId, reqId); break;
       case 'SET_VOLUME':
         if (data.volume) {
           if (data.volume.level !== undefined) video.volume = data.volume.level;
@@ -85,7 +80,6 @@
         sendMediaStatus(senderId, reqId);
         break;
       default:
-        console.log(TAG, 'Unhandled media msg:', data.type);
         sendMediaStatus(senderId, reqId);
     }
   });
@@ -94,26 +88,24 @@
 
   function handleLoad(data, senderId, reqId) {
     var media = data.media;
-    if (!media || !media.contentId) {
-      console.error(TAG, 'LOAD: no contentId');
-      return;
-    }
+    if (!media || !media.contentId) return;
 
     var url = media.contentId;
     console.log(TAG, 'LOAD:', url);
 
-    // Cleanup previous session
     destroyPlayer();
-
     mediaSessionId++;
     currentUrl = url;
     seekOffset = 0;
     serverSeeking = false;
+    subtitleTracks = [];
+    activeSubIndex = -1;
 
     if (media.duration > 0) realDuration = media.duration;
     else realDuration = 0;
 
     lastMetadata = media.metadata || null;
+    customData = data.customData || (media.customData) || null;
 
     isHlsContent = url.indexOf('.m3u8') !== -1 ||
       (media.contentType && media.contentType.indexOf('mpegURL') !== -1);
@@ -123,19 +115,19 @@
 
     try { monitorrOrigin = new URL(url).origin; } catch (e) { monitorrOrigin = null; }
 
-    // Apply start position from sender (resume point)
     var startTime = data.currentTime || 0;
     if (startTime > 0) seekOffset = startTime;
 
-    // Update UI
     showPlayer();
     updateMetadata();
+    updateSkipButtons();
     showSpinner();
 
     if (isHlsContent && typeof Hls !== 'undefined' && Hls.isSupported()) {
-      loadHls(url, function () {
+      createAndLoadHls(url, function () {
         hideSpinner();
         if (realDuration <= 0) fetchDuration();
+        if (hlsSessionId && monitorrOrigin) fetchSubtitleTracks();
         startStatusBroadcaster();
         sendMediaStatus(senderId, reqId);
         flashOverlay();
@@ -152,12 +144,11 @@
     }
   }
 
-  // ── SEEK ───────────────────────────────────────────────────────────────────
+  // ── SEEK (destroy + re-create pattern) ─────────────────────────────────────
 
   function handleSeek(data, senderId, reqId) {
     var targetTime = data.currentTime;
     if (targetTime === undefined) return;
-
     console.log(TAG, 'SEEK to', targetTime);
 
     if (!isHlsContent || !hlsSessionId || !monitorrOrigin) {
@@ -166,11 +157,8 @@
       return;
     }
 
-    // Server-side seek for HLS
     if (serverSeeking) return;
     serverSeeking = true;
-
-    // 1. Pause immediately and show spinner
     video.pause();
     showSpinner();
 
@@ -183,43 +171,63 @@
       })
       .then(function (res) {
         console.log(TAG, 'Server seek OK:', JSON.stringify(res));
-
-        // 2. Update offset NOW (before loading new source)
         seekOffset = res.offsetSeconds || targetTime;
 
         var cacheBuster = Date.now().toString(36);
         var reloadUrl = currentUrl.split('?')[0] + '?seek=' + cacheBuster;
         currentUrl = reloadUrl;
 
-        // 3. Load new source (video stays paused)
-        hls.loadSource(reloadUrl);
+        // Destroy old HLS instance completely (detach from video first)
+        if (hls) {
+          hls.detachMedia();
+          hls.destroy();
+          hls = null;
+        }
 
-        // 4. Wait for HLS.js to actually buffer a new fragment (not stale data)
-        hls.once(Hls.Events.FRAG_BUFFERED, function () {
-          // 5. New content is buffered. Set position and unpause in one shot.
-          video.currentTime = 0;
+        // Create fresh instance, load manifest WITHOUT attaching to video
+        var newHls = new Hls({
+          enableWorker: false,
+          maxBufferLength: 30,
+          maxMaxBufferLength: 120,
+          startLevel: -1,
+        });
+        hls = newHls;
 
-          serverSeeking = false;
+        newHls.loadSource(reloadUrl);
+
+        newHls.once(Hls.Events.MANIFEST_PARSED, function () {
+          console.log(TAG, 'Seek: manifest parsed, attaching to video');
+          // NOW attach to video -- single clean pipeline init
+          newHls.attachMedia(video);
+        });
+
+        newHls.once(Hls.Events.FRAG_BUFFERED, function () {
+          console.log(TAG, 'Seek: fragment buffered, starting playback');
           video.play().catch(function () {});
+          serverSeeking = false;
           hideSpinner();
           sendMediaStatus(senderId, reqId);
           flashOverlay();
-          console.log(TAG, 'Seek complete, offset:', seekOffset);
         });
 
-        // Start loading the new source (video stays paused)
-        hls.loadSource(reloadUrl);
+        newHls.on(Hls.Events.ERROR, function (_, errData) {
+          if (errData.fatal) {
+            console.error(TAG, 'Seek HLS error:', errData.type, errData.details);
+            if (errData.type === Hls.ErrorTypes.NETWORK_ERROR) newHls.startLoad();
+            else if (errData.type === Hls.ErrorTypes.MEDIA_ERROR) newHls.recoverMediaError();
+          }
+        });
 
-        // Safety: if FRAG_BUFFERED doesn't fire within 10s, force it
+        // Safety timeout
         setTimeout(function () {
           if (serverSeeking) {
+            console.warn(TAG, 'Seek safety timeout');
             serverSeeking = false;
-            video.currentTime = 0;
             video.play().catch(function () {});
             hideSpinner();
             sendMediaStatus(senderId, reqId);
           }
-        }, 10000);
+        }, 12000);
       })
       .catch(function (err) {
         console.error(TAG, 'Server seek failed:', err);
@@ -242,8 +250,8 @@
 
   // ── HLS.js ─────────────────────────────────────────────────────────────────
 
-  function loadHls(url, onReady) {
-    if (hls) { hls.destroy(); hls = null; }
+  function createAndLoadHls(url, onReady) {
+    if (hls) { hls.detachMedia(); hls.destroy(); hls = null; }
 
     hls = new Hls({
       enableWorker: false,
@@ -256,7 +264,7 @@
     hls.attachMedia(video);
 
     hls.on(Hls.Events.MANIFEST_PARSED, function () {
-      console.log(TAG, 'HLS manifest parsed, video.duration:', video.duration);
+      console.log(TAG, 'HLS manifest parsed');
       video.play().catch(function (e) { console.warn(TAG, 'autoplay:', e); });
       if (onReady) { onReady(); onReady = null; }
     });
@@ -272,19 +280,22 @@
 
   function destroyPlayer() {
     stopStatusBroadcaster();
-    if (hls) { hls.destroy(); hls = null; }
+    if (hls) { hls.detachMedia(); hls.destroy(); hls = null; }
     video.pause();
     video.removeAttribute('src');
     video.load();
+    removeAllTracks();
     seekOffset = 0;
     currentUrl = null;
+    subtitleTracks = [];
+    activeSubIndex = -1;
   }
 
-  // ── MEDIA_STATUS Builder ───────────────────────────────────────────────────
+  // ── MEDIA_STATUS ───────────────────────────────────────────────────────────
 
   function buildMediaStatus(reqId, stateOverride) {
     var state = stateOverride || getPlayerState();
-    var currentTime = getCurrentTime();
+    var ct = getCurrentTime();
 
     var status = {
       type: 'MEDIA_STATUS',
@@ -293,7 +304,7 @@
         mediaSessionId: mediaSessionId,
         playbackRate: video.playbackRate || 1,
         playerState: state,
-        currentTime: currentTime,
+        currentTime: ct,
         supportedMediaCommands: 0x3FFFF,
         volume: { level: video.volume, muted: video.muted },
         media: null
@@ -325,15 +336,9 @@
     return seekOffset + (video.currentTime || 0);
   }
 
-  // ── Send to senders ────────────────────────────────────────────────────────
-
   function sendMediaStatus(senderId, reqId) {
-    var status = buildMediaStatus(reqId);
-    if (senderId) {
-      sendRaw(senderId, status);
-    } else {
-      broadcastMediaStatus(reqId);
-    }
+    if (senderId) sendRaw(senderId, buildMediaStatus(reqId));
+    else broadcastMediaStatus(reqId);
   }
 
   function broadcastMediaStatus(reqId) {
@@ -345,11 +350,7 @@
   }
 
   function sendRaw(senderId, msg) {
-    try {
-      context.sendCustomMessage(MEDIA_NS, senderId, msg);
-    } catch (e) {
-      console.warn(TAG, 'Send failed:', e.message);
-    }
+    try { context.sendCustomMessage(MEDIA_NS, senderId, msg); } catch (e) {}
   }
 
   // ── Status Broadcaster ─────────────────────────────────────────────────────
@@ -365,21 +366,16 @@
     if (statusTimer) { clearInterval(statusTimer); statusTimer = null; }
   }
 
-  // ── Duration Fetching ──────────────────────────────────────────────────────
+  // ── Duration ───────────────────────────────────────────────────────────────
 
   function fetchDuration() {
     if (!hlsSessionId || !monitorrOrigin) return;
-    var url = monitorrOrigin + '/api/cast/hls/' + hlsSessionId + '/info';
-
-    fetch(url)
+    fetch(monitorrOrigin + '/api/cast/hls/' + hlsSessionId + '/info')
       .then(function (r) { return r.json(); })
       .then(function (info) {
         if (info.durationSeconds > 0) {
           realDuration = info.durationSeconds;
-          console.log(TAG, 'Duration:', realDuration + 's');
-          if (info.startOffsetSeconds > 0 && seekOffset === 0) {
-            seekOffset = info.startOffsetSeconds;
-          }
+          if (info.startOffsetSeconds > 0 && seekOffset === 0) seekOffset = info.startOffsetSeconds;
           broadcastMediaStatus(0);
         } else {
           setTimeout(fetchDuration, 3000);
@@ -388,9 +384,111 @@
       .catch(function () { setTimeout(fetchDuration, 5000); });
   }
 
-  // ── UI Updates ─────────────────────────────────────────────────────────────
+  // ── Subtitles ──────────────────────────────────────────────────────────────
 
-  video.addEventListener('timeupdate', updateOverlayProgress);
+  function fetchSubtitleTracks() {
+    var url = monitorrOrigin + '/api/cast/hls/' + hlsSessionId + '/subtitles';
+    fetch(url)
+      .then(function (r) { return r.json(); })
+      .then(function (tracks) {
+        subtitleTracks = tracks || [];
+        console.log(TAG, 'Subtitle tracks:', subtitleTracks.length);
+        updateCCButton();
+        // Auto-activate default track
+        for (var i = 0; i < subtitleTracks.length; i++) {
+          if (subtitleTracks[i].isDefault) { activateSubtitle(i); break; }
+        }
+      })
+      .catch(function () { subtitleTracks = []; });
+  }
+
+  function cycleSubtitle() {
+    if (subtitleTracks.length === 0) return;
+    var next = activeSubIndex + 1;
+    if (next >= subtitleTracks.length) next = -1;
+    activateSubtitle(next);
+  }
+
+  function activateSubtitle(idx) {
+    activeSubIndex = idx;
+    removeAllTracks();
+    if (idx >= 0 && subtitleTracks[idx]) {
+      var tr = subtitleTracks[idx];
+      var trackEl = document.createElement('track');
+      trackEl.kind = 'subtitles';
+      trackEl.label = tr.title || tr.language;
+      trackEl.srclang = tr.language;
+      trackEl.src = monitorrOrigin + '/api/cast/hls/' + hlsSessionId + '/subs/' + tr.file;
+      trackEl.default = true;
+      video.appendChild(trackEl);
+      setTimeout(function () {
+        for (var i = 0; i < video.textTracks.length; i++) {
+          video.textTracks[i].mode = (i === video.textTracks.length - 1) ? 'showing' : 'hidden';
+        }
+      }, 200);
+    }
+    updateCCButton();
+    flashOverlay();
+  }
+
+  function removeAllTracks() {
+    var tracks = video.querySelectorAll('track');
+    for (var i = 0; i < tracks.length; i++) tracks[i].remove();
+    for (var j = 0; j < video.textTracks.length; j++) video.textTracks[j].mode = 'hidden';
+  }
+
+  function updateCCButton() {
+    if (!btnCC) return;
+    if (subtitleTracks.length === 0) {
+      btnCC.style.display = 'none';
+      return;
+    }
+    btnCC.style.display = 'flex';
+    if (activeSubIndex >= 0) {
+      btnCC.classList.add('active');
+      if (ccLabel) ccLabel.textContent = subtitleTracks[activeSubIndex].language.toUpperCase();
+    } else {
+      btnCC.classList.remove('active');
+      if (ccLabel) ccLabel.textContent = '';
+    }
+  }
+
+  // ── Skip Buttons ───────────────────────────────────────────────────────────
+
+  function updateSkipButtons() {
+    var hasPrev = customData && customData.prevEpisodeFileId;
+    var hasNext = customData && customData.nextEpisodeFileId;
+    if (btnSkipPrev) btnSkipPrev.style.display = hasPrev ? 'flex' : 'none';
+    if (btnSkipNext) btnSkipNext.style.display = hasNext ? 'flex' : 'none';
+  }
+
+  function requestSkip(direction) {
+    var senders = context.getSenders();
+    for (var i = 0; i < senders.length; i++) {
+      try {
+        context.sendCustomMessage(MONITORR_NS, senders[i].id, {
+          type: direction === 'next' ? 'SKIP_NEXT' : 'SKIP_PREV',
+          hlsSessionId: hlsSessionId
+        });
+      } catch (e) {}
+    }
+  }
+
+  // ── UI ─────────────────────────────────────────────────────────────────────
+
+  video.addEventListener('timeupdate', function () {
+    if (serverSeeking) return;
+    var total = realDuration > 0 ? realDuration : (isFinite(video.duration) ? video.duration : 0);
+    var current = getCurrentTime();
+    if (timeLeft) timeLeft.textContent = formatTime(current);
+    if (timeRight) timeRight.textContent = formatTime(total);
+    if (total > 0 && seekPlayed) seekPlayed.style.width = Math.min(100, (current / total) * 100) + '%';
+    if (seekBuffered && total > 0) {
+      var be = seekOffset + (isFinite(video.duration) && video.duration > 0 ? video.duration : 0);
+      seekBuffered.style.width = Math.min(100, (be / total) * 100) + '%';
+    }
+  });
+
   video.addEventListener('ended', function () {
     if (serverSeeking) return;
     broadcastMediaStatus(0);
@@ -398,27 +496,10 @@
     showIdle();
   });
 
-  function updateOverlayProgress() {
-    if (serverSeeking) return;
-    var total = realDuration > 0 ? realDuration : (isFinite(video.duration) ? video.duration : 0);
-    var current = getCurrentTime();
-    if (timeLeft) timeLeft.textContent = formatTime(current);
-    if (timeRight) timeRight.textContent = formatTime(total);
-    if (total > 0 && seekPlayed) {
-      seekPlayed.style.width = Math.min(100, (current / total) * 100) + '%';
-    }
-    // Buffered indicator
-    if (seekBuffered && total > 0) {
-      var bufferedEnd = seekOffset + getTranscodedDuration();
-      seekBuffered.style.width = Math.min(100, (bufferedEnd / total) * 100) + '%';
-    }
-  }
-
-  function getTranscodedDuration() {
-    if (!video) return 0;
-    var d = video.duration;
-    return (isFinite(d) && d > 0) ? d : 0;
-  }
+  // Wire up CC button
+  if (btnCC) btnCC.addEventListener('click', function () { cycleSubtitle(); });
+  if (btnSkipPrev) btnSkipPrev.addEventListener('click', function () { requestSkip('prev'); });
+  if (btnSkipNext) btnSkipNext.addEventListener('click', function () { requestSkip('next'); });
 
   function updateMetadata() {
     if (!lastMetadata) return;
@@ -464,7 +545,7 @@
       : m + ':' + (ss < 10 ? '0' : '') + ss;
   }
 
-  // ── Monitorr Custom Namespace ──────────────────────────────────────────────
+  // ── Monitorr Namespace ─────────────────────────────────────────────────────
 
   context.addCustomMessageListener(MONITORR_NS, function (event) {
     var data = event.data;
@@ -477,26 +558,17 @@
     }
   });
 
-  // ── Sender connect/disconnect ──────────────────────────────────────────────
+  // ── Sender events ──────────────────────────────────────────────────────────
 
-  context.addEventListener(
-    cast.framework.system.EventType.SENDER_CONNECTED,
-    function (event) {
-      console.log(TAG, 'Sender connected:', event.senderId);
-      if (currentUrl) sendMediaStatus(event.senderId, 0);
-    }
-  );
+  context.addEventListener(cast.framework.system.EventType.SENDER_CONNECTED, function (event) {
+    console.log(TAG, 'Sender connected:', event.senderId);
+    if (currentUrl) sendMediaStatus(event.senderId, 0);
+  });
 
-  context.addEventListener(
-    cast.framework.system.EventType.SENDER_DISCONNECTED,
-    function (event) {
-      console.log(TAG, 'Sender disconnected:', event.senderId);
-      if (context.getSenders().length === 0) {
-        destroyPlayer();
-        context.stop();
-      }
-    }
-  );
+  context.addEventListener(cast.framework.system.EventType.SENDER_DISCONNECTED, function (event) {
+    console.log(TAG, 'Sender disconnected:', event.senderId);
+    if (context.getSenders().length === 0) { destroyPlayer(); context.stop(); }
+  });
 
   // ── Start ──────────────────────────────────────────────────────────────────
 
