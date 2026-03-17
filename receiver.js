@@ -9,7 +9,7 @@
 
 (function () {
 
-  var VERSION = '0.1.1';
+  var VERSION = '0.1.3';
   var TAG = '[Monitorr v' + VERSION + ']';
   var MEDIA_NS = 'urn:x-cast:com.google.cast.media';
   var MONITORR_NS = 'urn:x-cast:com.monitorr.cast';
@@ -169,8 +169,10 @@
     // Server-side seek for HLS
     if (serverSeeking) return;
     serverSeeking = true;
-    showSpinner();
+
+    // 1. Pause immediately and show spinner
     video.pause();
+    showSpinner();
 
     var seekUrl = monitorrOrigin + '/api/cast/hls/' + hlsSessionId + '/seek?t=' + targetTime.toFixed(1);
 
@@ -181,37 +183,46 @@
       })
       .then(function (res) {
         console.log(TAG, 'Server seek OK:', JSON.stringify(res));
+
+        // 2. Update offset NOW (before loading new source)
         seekOffset = res.offsetSeconds || targetTime;
 
         var cacheBuster = Date.now().toString(36);
         var reloadUrl = currentUrl.split('?')[0] + '?seek=' + cacheBuster;
         currentUrl = reloadUrl;
 
+        // 3. Load new source (video stays paused)
         hls.loadSource(reloadUrl);
-        hls.once(Hls.Events.MANIFEST_PARSED, function () {
-          video.currentTime = 0;
-          video.play().catch(function () {});
 
-          // Wait until the video is actually playing at the new position
-          // before un-freezing status updates (prevents the 0:00 flash)
-          function onPlaying() {
-            video.removeEventListener('playing', onPlaying);
+        hls.once(Hls.Events.MANIFEST_PARSED, function () {
+          // 4. Seek to start of new content, still paused
+          video.currentTime = 0;
+
+          // 5. Wait until enough data is buffered to play
+          function onCanPlay() {
+            video.removeEventListener('canplay', onCanPlay);
+
+            // 6. Everything is ready. Single clean transition:
+            //    update status, unpause, hide spinner -- all at once.
             serverSeeking = false;
+            video.play().catch(function () {});
             hideSpinner();
             sendMediaStatus(senderId, reqId);
             flashOverlay();
+            console.log(TAG, 'Seek complete, offset:', seekOffset);
           }
-          video.addEventListener('playing', onPlaying);
+          video.addEventListener('canplay', onCanPlay);
 
-          // Safety: if playing event doesn't fire within 3s, unfreeze anyway
+          // Safety: if canplay doesn't fire within 8s, force it
           setTimeout(function () {
-            video.removeEventListener('playing', onPlaying);
+            video.removeEventListener('canplay', onCanPlay);
             if (serverSeeking) {
               serverSeeking = false;
+              video.play().catch(function () {});
               hideSpinner();
               sendMediaStatus(senderId, reqId);
             }
-          }, 3000);
+          }, 8000);
         });
       })
       .catch(function (err) {
