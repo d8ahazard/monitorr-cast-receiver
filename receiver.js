@@ -1,6 +1,6 @@
 'use strict';
 
-// ─── Monitorr Cast Receiver v2.1.9 ──────────────────────────────────────────
+// ─── Monitorr Cast Receiver v2.2.0 ──────────────────────────────────────────
 //
 // Uses PlayerManager interceptors (not custom namespace for media).
 // The SDK owns the media state machine and UI. We own the player (HLS.js)
@@ -9,7 +9,7 @@
 
 (function () {
 
-  var VERSION = '2.1.9';
+  var VERSION = '2.2.0';
   var TAG = '[Monitorr v' + VERSION + ']';
   var MONITORR_NS = 'urn:x-cast:com.monitorr.cast';
 
@@ -40,6 +40,7 @@
   var btnRw = document.getElementById('mr-btn-rw');
   var btnFf = document.getElementById('mr-btn-ff');
   var seekRow = document.querySelector('.mr-seek-row');
+  var seekTrack = document.querySelector('.mr-seek-track');
   var seekPreview = document.getElementById('mr-seek-preview');
 
   // Tell the SDK to track our video element for state/status generation
@@ -454,7 +455,88 @@
     overlayTimer = setTimeout(function () { if (overlay) overlay.classList.remove('visible'); }, 6000);
   }
 
+  // ── Tap on video for play/pause ─────────────────────────────────────────
 
+  if (playerScreen) {
+    var tapStart = null;
+    playerScreen.addEventListener('pointerdown', function (e) {
+      if (e.target.closest('.mr-bottom') || e.target.closest('#mr-spinner')) return;
+      tapStart = { x: e.clientX, y: e.clientY, t: Date.now() };
+    });
+    playerScreen.addEventListener('pointerup', function (e) {
+      if (!tapStart) return;
+      var dx = Math.abs(e.clientX - tapStart.x);
+      var dy = Math.abs(e.clientY - tapStart.y);
+      var dt = Date.now() - tapStart.t;
+      tapStart = null;
+      if (dx > 20 || dy > 20 || dt > 400) return;
+      if (e.target.closest('.mr-bottom') || e.target.closest('#mr-spinner')) return;
+
+      if (isOverlayVisible()) {
+        hideOverlayNow();
+      } else {
+        if (video.paused) video.play().catch(function () {});
+        else video.pause();
+        playerManager.broadcastStatus();
+        flashOverlay();
+      }
+    });
+  }
+
+  // ── Seek track pointer/touch interaction ────────────────────────────────
+
+  if (seekTrack) {
+    var dragging = false;
+    var dragCommitTimer = null;
+
+    function pointerPctToTime(e) {
+      var rect = seekTrack.getBoundingClientRect();
+      var pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+      var duration = getDuration();
+      return pct * duration;
+    }
+
+    seekTrack.style.cursor = 'pointer';
+
+    seekTrack.addEventListener('pointerdown', function (e) {
+      var duration = getDuration();
+      if (duration <= 0) return;
+      e.preventDefault();
+      dragging = true;
+      seekTrack.setPointerCapture(e.pointerId);
+
+      beginSeekInteraction();
+      seekPreviewTime = pointerPctToTime(e);
+      updateSeekPreviewVisuals();
+      flashOverlay();
+    });
+
+    seekTrack.addEventListener('pointermove', function (e) {
+      if (!dragging) return;
+      e.preventDefault();
+      seekPreviewTime = pointerPctToTime(e);
+      updateSeekPreviewVisuals();
+    });
+
+    seekTrack.addEventListener('pointerup', function (e) {
+      if (!dragging) return;
+      dragging = false;
+      seekPreviewTime = pointerPctToTime(e);
+      updateSeekPreviewVisuals();
+
+      clearTimeout(dragCommitTimer);
+      dragCommitTimer = setTimeout(function () {
+        commitSeekPreview();
+      }, 400);
+    });
+
+    seekTrack.addEventListener('pointercancel', function () {
+      if (dragging) {
+        dragging = false;
+        cancelSeekPreview();
+      }
+    });
+  }
 
   // ── D-pad navigation: two rows (seek / buttons) ────────────────────────────
 

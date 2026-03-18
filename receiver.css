@@ -1,5 +1,5 @@
 /* ══════════════════════════════════════════════════════════════════════════════
-   Monitorr Cast Receiver v2.1.9
+   Monitorr Cast Receiver v2.2.0
    ══════════════════════════════════════════════════════════════════════════════ */
 
 :root {
@@ -61,7 +61,7 @@ html, body {
   pointer-events: none;
   opacity: 0; transition: opacity 0.4s ease;
 }
-#mr-overlay.visible { opacity: 1; }
+#mr-overlay.visible { opacity: 1; pointer-events: auto; }
 
 .mr-gradient {
   position: absolute; bottom: 0; left: 0; right: 0; height: 260px;
@@ -72,6 +72,7 @@ html, body {
 .mr-bottom {
   position: relative; z-index: 1;
   padding: 0 48px 40px;
+  pointer-events: auto;
 }
 
 /* ── Seek Bar ────────────────────────────────────────────────────────────── */
@@ -93,6 +94,14 @@ html, body {
   flex: 1; height: 5px;
   background: var(--mr-slider-track);
   border-radius: 3px; position: relative;
+  touch-action: none;
+  cursor: pointer;
+}
+.mr-seek-track::before {
+  content: '';
+  position: absolute;
+  inset: -12px 0;
+  z-index: 1;
 }
 .mr-seek-buffered, .mr-seek-played {
   position: absolute; top: 0; left: 0; height: 100%;
