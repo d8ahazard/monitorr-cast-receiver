@@ -1,6 +1,6 @@
 'use strict';
 
-// ─── Monitorr Cast Receiver v2.1.4 ──────────────────────────────────────────
+// ─── Monitorr Cast Receiver v2.1.5 ──────────────────────────────────────────
 //
 // Uses PlayerManager interceptors (not custom namespace for media).
 // The SDK owns the media state machine and UI. We own the player (HLS.js)
@@ -9,7 +9,7 @@
 
 (function () {
 
-  var VERSION = '2.1.4';
+  var VERSION = '2.1.5';
   var TAG = '[Monitorr v' + VERSION + ']';
   var MONITORR_NS = 'urn:x-cast:com.monitorr.cast';
 
@@ -40,6 +40,7 @@
   var btnRw = document.getElementById('mr-btn-rw');
   var btnFf = document.getElementById('mr-btn-ff');
   var seekRow = document.querySelector('.mr-seek-row');
+  var seekPreview = document.getElementById('mr-seek-preview');
 
   // Tell the SDK to track our video element for state/status generation
   playerManager.setMediaElement(video);
@@ -544,13 +545,58 @@
     return seekOffset + (video.currentTime || 0);
   }
 
-  function seekByDelta(deltaSeconds) {
-    var current = getCurrentPlaybackTime();
-    var duration = realDuration > 0 ? realDuration : (isFinite(video.duration) ? video.duration : 0);
-    var target = current + deltaSeconds;
-    if (duration > 0) target = Math.min(duration, target);
-    target = Math.max(0, target);
+  function getDuration() {
+    return realDuration > 0 ? realDuration : (isFinite(video.duration) ? video.duration : 0);
+  }
 
+  // ── Seek preview state ──────────────────────────────────────────────────
+
+  var seekPreviewTime = null;
+  var seekHoldCount = 0;
+
+  function getSeekStep() {
+    if (seekHoldCount < 3) return 5;
+    if (seekHoldCount < 8) return 10;
+    if (seekHoldCount < 15) return 30;
+    if (seekHoldCount < 25) return 60;
+    return 120;
+  }
+
+  function nudgeSeekPreview(direction) {
+    var duration = getDuration();
+    if (duration <= 0) return;
+
+    if (seekPreviewTime === null) seekPreviewTime = getCurrentPlaybackTime();
+    var step = getSeekStep();
+    seekHoldCount++;
+
+    seekPreviewTime += direction * step;
+    seekPreviewTime = Math.max(0, Math.min(duration, seekPreviewTime));
+
+    if (seekPreview) {
+      seekPreview.classList.add('active');
+      seekPreview.style.width = (seekPreviewTime / duration * 100) + '%';
+    }
+    if (timeLeft) timeLeft.textContent = formatTime(seekPreviewTime);
+  }
+
+  function cancelSeekPreview() {
+    seekPreviewTime = null;
+    seekHoldCount = 0;
+    if (seekPreview) {
+      seekPreview.classList.remove('active');
+      seekPreview.style.width = '0';
+    }
+  }
+
+  function commitSeekPreview() {
+    if (seekPreviewTime === null) return;
+    var target = seekPreviewTime;
+    cancelSeekPreview();
+    commitSeek(target);
+  }
+
+  function commitSeek(target) {
     if (isHlsContent && hlsSessionId && monitorrOrigin) {
       if (serverSeeking) return;
       serverSeeking = true;
@@ -597,6 +643,14 @@
     flashOverlay();
   }
 
+  function seekByDelta(deltaSeconds) {
+    var target = getCurrentPlaybackTime() + deltaSeconds;
+    var duration = getDuration();
+    if (duration > 0) target = Math.min(duration, target);
+    target = Math.max(0, target);
+    commitSeek(target);
+  }
+
   window.addEventListener('keydown', function (e) {
     var key = normalizeRemoteKey(e);
     if (!isOwnedRemoteKey(key)) return;
@@ -619,6 +673,7 @@
 
     if (key === 'ArrowDown') {
       if (activeRow === 'seek') {
+        cancelSeekPreview();
         var btns = getVisibleButtons();
         var ppIdx = -1;
         for (var i = 0; i < btns.length; i++) { if (btns[i] === btnPlayPause) { ppIdx = i; break; } }
@@ -631,7 +686,7 @@
 
     if (key === 'ArrowLeft') {
       if (activeRow === 'seek') {
-        seekByDelta(-10);
+        nudgeSeekPreview(-1);
       } else {
         setButtonFocus(focusIndex <= 0 ? getVisibleButtons().length - 1 : focusIndex - 1);
       }
@@ -640,7 +695,7 @@
 
     if (key === 'ArrowRight') {
       if (activeRow === 'seek') {
-        seekByDelta(10);
+        nudgeSeekPreview(1);
       } else {
         setButtonFocus(focusIndex + 1);
       }
@@ -649,9 +704,7 @@
 
     if (key === 'Enter') {
       if (activeRow === 'seek') {
-        if (video.paused) video.play().catch(function () {});
-        else video.pause();
-        playerManager.broadcastStatus();
+        commitSeekPreview();
       } else {
         var btns2 = getVisibleButtons();
         if (focusIndex >= 0 && focusIndex < btns2.length) btns2[focusIndex].click();
@@ -660,6 +713,7 @@
     }
 
     if (key === 'Backspace' || key === 'Escape') {
+      cancelSeekPreview();
       hideOverlayNow();
       return;
     }
@@ -676,6 +730,9 @@
     var key = normalizeRemoteKey(e);
     if (!isOwnedRemoteKey(key)) return;
     consumeKeyEvent(e);
+    if (key === 'ArrowLeft' || key === 'ArrowRight') {
+      seekHoldCount = 0;
+    }
   }, true);
   function showPlayer() { if (idleScreen) idleScreen.style.display = 'none'; if (playerScreen) playerScreen.style.display = 'block'; }
   function showIdle() { if (playerScreen) playerScreen.style.display = 'none'; if (idleScreen) idleScreen.style.display = 'flex'; }

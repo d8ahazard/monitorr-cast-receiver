@@ -1,5 +1,5 @@
 /* ══════════════════════════════════════════════════════════════════════════════
-   Monitorr Cast Receiver v2.1.4
+   Monitorr Cast Receiver v2.1.5
    ══════════════════════════════════════════════════════════════════════════════ */
 
 :root {
@@ -100,6 +100,13 @@ html, body {
 }
 .mr-seek-buffered { background: var(--mr-slider-buffered); }
 .mr-seek-played { background: var(--mr-slider-active); }
+.mr-seek-preview {
+  position: absolute; top: 0; left: 0; height: 100%;
+  border-radius: 3px; pointer-events: none; width: 0;
+  background: rgba(3, 169, 244, 0.45);
+  display: none;
+}
+.mr-seek-preview.active { display: block; }
 
 /* ── Controls Row ────────────────────────────────────────────────────────── */
 
