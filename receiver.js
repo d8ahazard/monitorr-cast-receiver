@@ -1,6 +1,6 @@
 'use strict';
 
-// ─── Monitorr Cast Receiver v2.3.0 ──────────────────────────────────────────
+// ─── Monitorr Cast Receiver v2.3.1 ──────────────────────────────────────────
 //
 // Uses PlayerManager interceptors (not custom namespace for media).
 // The SDK owns the media state machine and UI. We own the player (HLS.js)
@@ -9,7 +9,7 @@
 
 (function () {
 
-  var VERSION = '2.3.0';
+  var VERSION = '2.3.1';
   var TAG = '[Monitorr v' + VERSION + ']';
   var MONITORR_NS = 'urn:x-cast:com.monitorr.cast';
 
@@ -315,26 +315,54 @@
 
   var vttCache = {};
   var activeTextTrack = null;
+  var subPollTimer = null;
+  var subPollAttempts = 0;
 
   function fetchSubtitleTracks() {
+    if (!hlsSessionId || !monitorrOrigin) return;
+    subPollAttempts = 0;
+    pollSubtitleTracks();
+  }
+
+  function pollSubtitleTracks() {
     if (!hlsSessionId || !monitorrOrigin) return;
     fetch(monitorrOrigin + '/api/cast/hls/' + hlsSessionId + '/subtitles')
       .then(function (r) { return r.json(); })
       .then(function (data) {
         subtitleTracks = data.tracks || [];
-        activeSubIndex = -1;
-        console.log(TAG, 'Subs:', subtitleTracks.length);
-        loadVttTracks();
+        console.log(TAG, 'Subs poll #' + subPollAttempts + ':', subtitleTracks.length, 'tracks');
+
+        var anyReady = false;
+        var allReady = true;
+        for (var i = 0; i < subtitleTracks.length; i++) {
+          if (subtitleTracks[i].vttUrl && subtitleTracks[i].vttReady) anyReady = true;
+          else if (subtitleTracks[i].vttUrl) allReady = false;
+        }
+
+        if (anyReady) loadVttTracks();
         updateCCButton();
+
+        subPollAttempts++;
+        if (!allReady && subPollAttempts < 15) {
+          clearTimeout(subPollTimer);
+          subPollTimer = setTimeout(pollSubtitleTracks, 3000);
+        }
       })
-      .catch(function () { subtitleTracks = []; updateCCButton(); });
+      .catch(function () {
+        subtitleTracks = [];
+        updateCCButton();
+        subPollAttempts++;
+        if (subPollAttempts < 15) {
+          clearTimeout(subPollTimer);
+          subPollTimer = setTimeout(pollSubtitleTracks, 3000);
+        }
+      });
   }
 
   function loadVttTracks() {
-    removeAllTextTracks();
     for (var i = 0; i < subtitleTracks.length; i++) {
       var t = subtitleTracks[i];
-      if (t.vttUrl && t.vttReady) {
+      if (t.vttUrl && t.vttReady && !vttCache[i]) {
         fetchAndCacheVtt(i, t);
       }
     }
