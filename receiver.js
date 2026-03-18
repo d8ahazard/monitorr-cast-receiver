@@ -1,6 +1,6 @@
 'use strict';
 
-// ─── Monitorr Cast Receiver v2.4.2 ──────────────────────────────────────────
+// ─── Monitorr Cast Receiver v2.4.4 ──────────────────────────────────────────
 //
 // Uses PlayerManager interceptors (not custom namespace for media).
 // The SDK owns the media state machine and UI. We own the player (HLS.js)
@@ -9,7 +9,7 @@
 
 (function () {
 
-  var VERSION = '2.4.2';
+  var VERSION = '2.4.4';
   var TAG = '[Monitorr v' + VERSION + ']';
   var MONITORR_NS = 'urn:x-cast:com.monitorr.cast';
 
@@ -756,9 +756,9 @@
     if (key === 'Down' || key === 'UIDown' || key === 'DPAD_DOWN' || key === 'NAVIGATE_DOWN') return 'ArrowDown';
     if (key === 'Left' || key === 'UILeft' || key === 'DPAD_LEFT' || key === 'NAVIGATE_LEFT') return 'ArrowLeft';
     if (key === 'Right' || key === 'UIRight' || key === 'DPAD_RIGHT' || key === 'NAVIGATE_RIGHT') return 'ArrowRight';
-    if (key === 'Back' || key === 'GoBack' || key === 'BrowserBack') return 'Backspace';
+    if (key === 'Back' || key === 'GoBack' || key === 'BrowserBack' || key === 'XF86Back') return 'Backspace';
     if (key === 'Select') return 'Enter';
-    if (code === 461 || code === 27 || code === 8) return 'Backspace';
+    if (code === 4 || code === 461 || code === 27 || code === 8) return 'Backspace';
     if (code === 13 || code === 23 || code === 66) return 'Enter';
     if (code === 32) return ' ';
     if (code === 179) return 'MediaPlayPause';
@@ -960,9 +960,7 @@
 
     if (!isOverlayVisible() && (key === 'Backspace' || key === 'Escape')) {
       consumeKeyEvent(e);
-      console.log(TAG, 'Back pressed with overlay hidden — stopping playback and exiting');
       video.pause();
-      reportProgressFinal();
       killServerSession();
       destroyHls();
       showIdle();
@@ -1037,9 +1035,7 @@
       } else if (isOverlayVisible()) {
         hideOverlayNow();
       } else {
-        console.log(TAG, 'Back pressed — exiting');
         video.pause();
-        reportProgressFinal();
         killServerSession();
         destroyHls();
         showIdle();
