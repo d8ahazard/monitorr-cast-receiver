@@ -1,6 +1,6 @@
 'use strict';
 
-// ─── Monitorr Cast Receiver v2.4.6 ──────────────────────────────────────────
+// ─── Monitorr Cast Receiver v2.4.7 ──────────────────────────────────────────
 //
 // Uses PlayerManager interceptors (not custom namespace for media).
 // The SDK owns the media state machine and UI. We own the player (HLS.js)
@@ -9,7 +9,7 @@
 
 (function () {
 
-  var VERSION = '2.4.6';
+  var VERSION = '2.4.7';
   var TAG = '[Monitorr v' + VERSION + ']';
   var MONITORR_NS = 'urn:x-cast:com.monitorr.cast';
 
@@ -125,6 +125,12 @@
       updateMetadata();
       updateSkipButtons();
       showSpinner();
+
+      if (seekOffset > 0 && realDuration > 0) {
+        if (timeLeft) timeLeft.textContent = formatTime(seekOffset);
+        if (timeRight) timeRight.textContent = formatTime(realDuration);
+        if (seekPlayed) seekPlayed.style.width = Math.min(100, (seekOffset / realDuration) * 100) + '%';
+      }
 
       if (isHlsContent && typeof Hls !== 'undefined' && Hls.isSupported()) {
         // Load with HLS.js. Return the request so the SDK's state machine advances.
