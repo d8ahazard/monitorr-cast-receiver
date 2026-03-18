@@ -193,7 +193,7 @@
   var keyHoldTimer = null;
   var keyHeld = false;
 
-  document.addEventListener('keydown', function (e) {
+  window.addEventListener('keydown', function (e) {
     var code = e.keyCode;
 
     // Play/Pause media keys -- always work
@@ -265,7 +265,7 @@
     }
   });
 
-  document.addEventListener('keyup', function (e) {
+  window.addEventListener('keyup', function (e) {
     if (e.keyCode === 37 || e.keyCode === 39) {
       if (keyHoldTimer) { clearTimeout(keyHoldTimer); keyHoldTimer = null; }
       if (!menuVisible) {
@@ -580,11 +580,40 @@
   opts.skipPlayersLoad = true;
   opts.disableIdleTimeout = true;
   opts.maxInactivity = 3600;
+  var MEDIA_NS = 'urn:x-cast:com.google.cast.media';
   opts.customNamespaces = {};
   opts.customNamespaces[NS] = cast.framework.system.MessageType.JSON;
+  opts.customNamespaces[MEDIA_NS] = cast.framework.system.MessageType.JSON;
+
+  // Keep the platform happy: respond to media namespace GET_STATUS
+  context.addCustomMessageListener(MEDIA_NS, function (event) {
+    var data = event.data;
+    if (data.type === 'GET_STATUS' || data.type === 'LOAD' || data.type === 'PLAY' ||
+        data.type === 'PAUSE' || data.type === 'STOP' || data.type === 'SEEK') {
+      // Respond with a minimal MEDIA_STATUS so the platform doesn't kill us
+      try {
+        context.sendCustomMessage(MEDIA_NS, event.senderId, {
+          type: 'MEDIA_STATUS', requestId: data.requestId || 0,
+          status: [{ mediaSessionId: 1, playerState: getState(),
+            currentTime: seekOffset + (video.currentTime || 0),
+            supportedMediaCommands: 0x3FFFF,
+            media: currentUrl ? { contentId: currentUrl, streamType: 'BUFFERED',
+              duration: realDuration > 0 ? realDuration : (isFinite(video.duration) ? video.duration : 0)
+            } : null
+          }]
+        });
+      } catch (e) {}
+    }
+  });
 
   context.start(opts);
   console.log(TAG, 'Receiver started');
   showIdle();
+
+  // Ensure the page can receive D-pad key events on CCwGTV
+  document.body.setAttribute('tabindex', '0');
+  document.body.focus();
+  // Re-focus on any click/touch too
+  document.body.addEventListener('click', function () { document.body.focus(); });
 
 })();
