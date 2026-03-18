@@ -1,6 +1,6 @@
 'use strict';
 
-// ─── Monitorr Cast Receiver v2.4.0 ──────────────────────────────────────────
+// ─── Monitorr Cast Receiver v2.5.0 ──────────────────────────────────────────
 //
 // Uses PlayerManager interceptors (not custom namespace for media).
 // The SDK owns the media state machine and UI. We own the player (HLS.js)
@@ -9,7 +9,7 @@
 
 (function () {
 
-  var VERSION = '2.4.0';
+  var VERSION = '2.5.0';
   var TAG = '[Monitorr v' + VERSION + ']';
   var MONITORR_NS = 'urn:x-cast:com.monitorr.cast';
 
@@ -113,7 +113,7 @@
         createAndLoadHls(url, function () {
           hideSpinner();
           if (realDuration <= 0) fetchDuration();
-          if (hlsSessionId && monitorrOrigin) fetchSubtitleTracks();
+          initSubtitleTracksFromHls();
           flashOverlay();
         });
       }
@@ -185,7 +185,7 @@
             hideSpinner();
             playerManager.broadcastStatus();
             flashOverlay();
-            reapplySubtitlesAfterSeek();
+            initSubtitleTracksFromHls();
           });
           newHls.on(Hls.Events.ERROR, function (_, e) {
             if (e.fatal) {
@@ -311,212 +311,44 @@
       .catch(function () { setTimeout(fetchDuration, 5000); });
   }
 
-  // ── Subtitles (lazy sidecar WebVTT) ───────────────────────────────────────
+  // ── Subtitles (HLS.js native) ─────────────────────────────────────────────
 
-  var vttCache = {};
-  var activeTextTrack = null;
-  var subExtractPollTimer = null;
-  var subExtractRequested = false;
-  var pendingSubIdx = -1;
-
-  function fetchSubtitleTracks() {
-    if (!hlsSessionId || !monitorrOrigin) return;
-    vttCache = {};
-    activeSubIndex = -1;
-    subExtractRequested = false;
-    pendingSubIdx = -1;
-
-    fetch(monitorrOrigin + '/api/cast/hls/' + hlsSessionId + '/subtitles')
-      .then(function (r) { return r.json(); })
-      .then(function (data) {
-        subtitleTracks = data.tracks || [];
-        console.log(TAG, 'Subtitle tracks:', subtitleTracks.length);
-        updateCCButton();
-
-        var defaultIdx = -1;
-        for (var i = 0; i < subtitleTracks.length; i++) {
-          if (subtitleTracks[i].isDefault) { defaultIdx = i; break; }
-        }
-        if (defaultIdx >= 0) {
-          console.log(TAG, 'Auto-enabling default sub:', subtitleTracks[defaultIdx].language);
-          requestSubtitle(defaultIdx);
-        }
-      })
-      .catch(function () { subtitleTracks = []; updateCCButton(); });
-  }
-
-  function requestSubtitle(idx) {
-    if (idx < 0 || idx >= subtitleTracks.length) return;
-
-    activeSubIndex = idx;
-    pendingSubIdx = idx;
+  function initSubtitleTracksFromHls() {
+    if (!hls) return;
+    subtitleTracks = hls.subtitleTracks || [];
+    activeSubIndex = hls.subtitleTrack;
+    console.log(TAG, 'HLS subtitle tracks:', subtitleTracks.length, 'active:', activeSubIndex);
     updateCCButton();
-
-    if (vttCache[idx]) {
-      applyCuesForOffset(idx);
-      pendingSubIdx = -1;
-      updateCCButton();
-      return;
-    }
-
-    var track = subtitleTracks[idx];
-    if (track.vttReady) {
-      fetchAndCacheVtt(idx, track, function () {
-        if (pendingSubIdx === idx) {
-          applyCuesForOffset(idx);
-          pendingSubIdx = -1;
-          updateCCButton();
-        }
-      });
-      return;
-    }
-
-    if (!subExtractRequested) {
-      subExtractRequested = true;
-      console.log(TAG, 'Requesting subtitle extraction');
-      fetch(monitorrOrigin + '/api/cast/hls/' + hlsSessionId + '/subs/extract', { method: 'POST' })
-        .catch(function () {});
-    }
-
-    pollForVttReady(idx);
-  }
-
-  function pollForVttReady(idx) {
-    clearTimeout(subExtractPollTimer);
-    if (!hlsSessionId || !monitorrOrigin) return;
-
-    fetch(monitorrOrigin + '/api/cast/hls/' + hlsSessionId + '/subtitles')
-      .then(function (r) { return r.json(); })
-      .then(function (data) {
-        subtitleTracks = data.tracks || [];
-        updateCCButton();
-
-        var track = subtitleTracks[idx];
-        if (track && track.vttReady) {
-          console.log(TAG, 'VTT ready for', track.language);
-          fetchAndCacheVtt(idx, track, function () {
-            if (pendingSubIdx === idx) {
-              applyCuesForOffset(idx);
-              pendingSubIdx = -1;
-              updateCCButton();
-            }
-          });
-        } else {
-          subExtractPollTimer = setTimeout(function () { pollForVttReady(idx); }, 2000);
-        }
-      })
-      .catch(function () {
-        subExtractPollTimer = setTimeout(function () { pollForVttReady(idx); }, 2000);
-      });
-  }
-
-  function fetchAndCacheVtt(idx, trackInfo, onDone) {
-    var url = monitorrOrigin + trackInfo.vttUrl;
-    fetch(url)
-      .then(function (r) { return r.text(); })
-      .then(function (vttText) {
-        vttCache[idx] = parseVttCues(vttText);
-        console.log(TAG, 'Cached VTT:', trackInfo.language, vttCache[idx].length, 'cues');
-        if (onDone) onDone();
-      })
-      .catch(function (e) {
-        console.log(TAG, 'Failed to fetch VTT:', trackInfo.language, e.message);
-        if (onDone) onDone();
-      });
-  }
-
-  function parseVttCues(vttText) {
-    var cues = [];
-    var lines = vttText.split('\n');
-    var i = 0;
-    while (i < lines.length) {
-      var line = lines[i].trim();
-      var match = line.match(/^(\d{2}):(\d{2}):(\d{2})\.(\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2})\.(\d{3})/);
-      if (!match) { i++; continue; }
-      var startSec = parseInt(match[1]) * 3600 + parseInt(match[2]) * 60 + parseInt(match[3]) + parseInt(match[4]) / 1000;
-      var endSec = parseInt(match[5]) * 3600 + parseInt(match[6]) * 60 + parseInt(match[7]) + parseInt(match[8]) / 1000;
-      i++;
-      var text = [];
-      while (i < lines.length && lines[i].trim() !== '') {
-        text.push(lines[i].trim());
-        i++;
-      }
-      if (text.length > 0) {
-        cues.push({ start: startSec, end: endSec, text: text.join('\n') });
-      }
-      i++;
-    }
-    return cues;
-  }
-
-  function removeAllTextTracks() {
-    activeTextTrack = null;
-    for (var i = video.textTracks.length - 1; i >= 0; i--) {
-      video.textTracks[i].mode = 'disabled';
-    }
-    var tracks = video.querySelectorAll('track');
-    for (var j = tracks.length - 1; j >= 0; j--) {
-      tracks[j].parentNode.removeChild(tracks[j]);
-    }
-  }
-
-  function applyCuesForOffset(trackIdx) {
-    removeAllTextTracks();
-    if (trackIdx < 0 || !vttCache[trackIdx]) return;
-
-    var cues = vttCache[trackIdx];
-    var offset = seekOffset;
-    var textTrack = video.addTextTrack('subtitles', subtitleTracks[trackIdx].language, subtitleTracks[trackIdx].language);
-    textTrack.mode = 'showing';
-    activeTextTrack = textTrack;
-
-    for (var i = 0; i < cues.length; i++) {
-      var adjusted_start = cues[i].start - offset;
-      var adjusted_end = cues[i].end - offset;
-      if (adjusted_end <= 0) continue;
-      if (adjusted_start < 0) adjusted_start = 0;
-      try {
-        textTrack.addCue(new VTTCue(adjusted_start, adjusted_end, cues[i].text));
-      } catch (e) {}
-    }
-    console.log(TAG, 'Applied', textTrack.cues ? textTrack.cues.length : 0, 'cues at offset', offset);
-  }
-
-  function reapplySubtitlesAfterSeek() {
-    if (activeSubIndex >= 0 && vttCache[activeSubIndex]) {
-      applyCuesForOffset(activeSubIndex);
-    }
   }
 
   function cycleSubtitle() {
-    if (subtitleTracks.length === 0) return;
+    if (!hls || hls.subtitleTracks.length === 0) return;
+    var tracks = hls.subtitleTracks;
     var next = activeSubIndex + 1;
-    if (next >= subtitleTracks.length) next = -1;
+    if (next >= tracks.length) next = -1;
 
-    if (next < 0) {
-      activeSubIndex = -1;
-      pendingSubIdx = -1;
-      clearTimeout(subExtractPollTimer);
-      removeAllTextTracks();
-      updateCCButton();
+    hls.subtitleTrack = next;
+    activeSubIndex = next;
+
+    if (next >= 0) {
+      hls.subtitleDisplay = true;
+      console.log(TAG, 'Subtitle enabled:', tracks[next].name || tracks[next].lang);
+    } else {
+      hls.subtitleDisplay = false;
       console.log(TAG, 'Subtitles off');
-      return;
     }
-
-    requestSubtitle(next);
+    updateCCButton();
   }
 
   function updateCCButton() {
     if (!btnCC) return;
-    if (subtitleTracks.length === 0) { btnCC.style.display = 'none'; return; }
+    var tracks = hls ? hls.subtitleTracks : [];
+    if (tracks.length === 0) { btnCC.style.display = 'none'; return; }
     btnCC.style.display = 'flex';
 
-    if (pendingSubIdx >= 0 && !vttCache[pendingSubIdx]) {
+    if (activeSubIndex >= 0 && tracks[activeSubIndex]) {
       btnCC.classList.add('active');
-      if (ccLabel) ccLabel.textContent = '...';
-    } else if (activeSubIndex >= 0 && subtitleTracks[activeSubIndex]) {
-      btnCC.classList.add('active');
-      if (ccLabel) ccLabel.textContent = subtitleTracks[activeSubIndex].language.toUpperCase();
+      if (ccLabel) ccLabel.textContent = (tracks[activeSubIndex].lang || 'SUB').toUpperCase();
     } else {
       btnCC.classList.remove('active');
       if (ccLabel) ccLabel.textContent = '';
@@ -920,7 +752,7 @@
             hideSpinner();
             playerManager.broadcastStatus();
             flashOverlay();
-            reapplySubtitlesAfterSeek();
+            initSubtitleTracksFromHls();
           });
           newHls.on(Hls.Events.ERROR, function (_, e) {
             if (e.fatal) {
