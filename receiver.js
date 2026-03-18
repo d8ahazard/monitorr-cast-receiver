@@ -1,6 +1,6 @@
 'use strict';
 
-// ─── Monitorr Cast Receiver v2.1.5 ──────────────────────────────────────────
+// ─── Monitorr Cast Receiver v2.1.6 ──────────────────────────────────────────
 //
 // Uses PlayerManager interceptors (not custom namespace for media).
 // The SDK owns the media state machine and UI. We own the player (HLS.js)
@@ -9,7 +9,7 @@
 
 (function () {
 
-  var VERSION = '2.1.5';
+  var VERSION = '2.1.6';
   var TAG = '[Monitorr v' + VERSION + ']';
   var MONITORR_NS = 'urn:x-cast:com.monitorr.cast';
 
@@ -409,8 +409,16 @@
   video.addEventListener('playing', updatePlayPauseIcon);
 
   video.addEventListener('timeupdate', function () {
-    if (serverSeeking) return;
     var total = realDuration > 0 ? realDuration : (isFinite(video.duration) ? video.duration : 0);
+
+    if (serverSeeking || seekLockedTime !== null) {
+      var locked = seekLockedTime !== null ? seekLockedTime : getCurrentPlaybackTime();
+      if (timeLeft) timeLeft.textContent = formatTime(locked);
+      if (timeRight) timeRight.textContent = formatTime(total);
+      if (total > 0 && seekPlayed) seekPlayed.style.width = Math.min(100, (locked / total) * 100) + '%';
+      return;
+    }
+
     var current = seekOffset + (video.currentTime || 0);
     if (timeLeft) timeLeft.textContent = formatTime(current);
     if (timeRight) timeRight.textContent = formatTime(total);
@@ -553,6 +561,7 @@
 
   var seekPreviewTime = null;
   var seekHoldCount = 0;
+  var seekLockedTime = null;
 
   function getSeekStep() {
     if (seekHoldCount < 3) return 5;
@@ -600,6 +609,7 @@
     if (isHlsContent && hlsSessionId && monitorrOrigin) {
       if (serverSeeking) return;
       serverSeeking = true;
+      seekLockedTime = target;
       video.pause();
       showSpinner();
       var seekUrl = monitorrOrigin + '/api/cast/hls/' + hlsSessionId + '/seek?t=' + target.toFixed(1);
@@ -618,6 +628,7 @@
           newHls.once(Hls.Events.FRAG_BUFFERED, function () {
             video.play().catch(function () {});
             serverSeeking = false;
+            seekLockedTime = null;
             hideSpinner();
             playerManager.broadcastStatus();
             flashOverlay();
@@ -628,10 +639,11 @@
               else if (e.type === Hls.ErrorTypes.MEDIA_ERROR) newHls.recoverMediaError();
             }
           });
-          setTimeout(function () { if (serverSeeking) { serverSeeking = false; video.play().catch(function () {}); hideSpinner(); } }, 12000);
+          setTimeout(function () { if (serverSeeking) { serverSeeking = false; seekLockedTime = null; video.play().catch(function () {}); hideSpinner(); } }, 12000);
         })
         .catch(function () {
           serverSeeking = false;
+          seekLockedTime = null;
           hideSpinner();
           video.play().catch(function () {});
         });
@@ -639,6 +651,7 @@
     }
 
     video.currentTime = target;
+    seekLockedTime = null;
     playerManager.broadcastStatus();
     flashOverlay();
   }
