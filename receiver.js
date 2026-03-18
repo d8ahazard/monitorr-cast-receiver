@@ -9,7 +9,7 @@
 
 (function () {
 
-  var VERSION = '0.5.0';
+  var VERSION = '0.5.2';
   var TAG = '[Monitorr v' + VERSION + ']';
   var NS = 'urn:x-cast:com.monitorr.cast';
 
@@ -307,6 +307,122 @@
   // ── UI ─────────────────────────────────────────────────────────────────────
 
   if (btnCC) btnCC.addEventListener('click', cycleSubtitle);
+
+  // ── Remote Control (D-pad with accelerating seek) ──────────────────────────
+  //
+  // Tap: fixed jump (right +10s, left -5s)
+  // Hold: accelerating scrub (5s → 10s → 30s → 60s per tick)
+  // Release: commit the seek to server
+
+  var scrubState = null; // { direction, startTime, scrubTime, interval, holdStart }
+
+  function getScrubStep(holdMs) {
+    if (holdMs < 1000) return 5;
+    if (holdMs < 3000) return 10;
+    if (holdMs < 6000) return 30;
+    return 60;
+  }
+
+  function startScrub(direction) {
+    if (serverSeeking || !currentUrl) return;
+    var now = seekOffset + (video.currentTime || 0);
+    var total = realDuration > 0 ? realDuration : (isFinite(video.duration) ? video.duration : 0);
+    scrubState = { direction: direction, startTime: now, scrubTime: now, holdStart: Date.now(), total: total };
+    // First tick immediately
+    tickScrub();
+    scrubState.interval = setInterval(tickScrub, 200);
+  }
+
+  function tickScrub() {
+    if (!scrubState) return;
+    var holdMs = Date.now() - scrubState.holdStart;
+    var step = getScrubStep(holdMs);
+    scrubState.scrubTime += scrubState.direction * step * 0.2; // 0.2 = per-tick fraction (5 ticks/s)
+    scrubState.scrubTime = Math.max(0, Math.min(scrubState.total || 999999, scrubState.scrubTime));
+
+    // Update seek bar visually (don't trigger actual seek yet)
+    if (timeLeft) timeLeft.textContent = fmt(scrubState.scrubTime);
+    if (scrubState.total > 0 && seekPlayed) {
+      seekPlayed.style.width = Math.min(100, scrubState.scrubTime / scrubState.total * 100) + '%';
+    }
+    flashOverlay();
+  }
+
+  function endScrub() {
+    if (!scrubState) return;
+    clearInterval(scrubState.interval);
+    var target = scrubState.scrubTime;
+    var moved = Math.abs(target - scrubState.startTime);
+    scrubState = null;
+
+    if (moved < 1) return; // Didn't move enough, ignore
+
+    // Commit the seek
+    handleSeek({ time: target }, null);
+  }
+
+  function tapSeek(direction) {
+    if (serverSeeking || !currentUrl) return;
+    var now = seekOffset + (video.currentTime || 0);
+    var jump = direction > 0 ? 10 : -5;
+    var target = Math.max(0, now + jump);
+    handleSeek({ time: target }, null);
+  }
+
+  var keyHoldTimer = null;
+  var keyHeld = false;
+
+  document.addEventListener('keydown', function (e) {
+    flashOverlay();
+
+    // Play/Pause
+    if (e.keyCode === 179 || e.keyCode === 415 || e.keyCode === 19 || e.keyCode === 13) {
+      if (currentUrl && !serverSeeking) {
+        if (video.paused) video.play().catch(function(){}); else video.pause();
+        broadcast();
+      }
+      e.preventDefault();
+      return;
+    }
+
+    // Left/Right: start hold detection
+    if ((e.keyCode === 37 || e.keyCode === 39) && !e.repeat) {
+      keyHeld = false;
+      var dir = e.keyCode === 39 ? 1 : -1;
+      keyHoldTimer = setTimeout(function () {
+        keyHeld = true;
+        startScrub(dir);
+      }, 300); // 300ms to distinguish tap from hold
+      e.preventDefault();
+      return;
+    }
+
+    // During hold, e.repeat fires -- keep scrubbing (handled by interval)
+    if ((e.keyCode === 37 || e.keyCode === 39) && e.repeat) {
+      e.preventDefault();
+      return;
+    }
+
+    // CC toggle on up arrow
+    if (e.keyCode === 38 && subtitleTracks.length > 0) {
+      cycleSubtitle();
+      e.preventDefault();
+    }
+  });
+
+  document.addEventListener('keyup', function (e) {
+    if (e.keyCode === 37 || e.keyCode === 39) {
+      if (keyHoldTimer) { clearTimeout(keyHoldTimer); keyHoldTimer = null; }
+      if (keyHeld) {
+        endScrub();
+      } else {
+        // It was a tap, not a hold
+        tapSeek(e.keyCode === 39 ? 1 : -1);
+      }
+      keyHeld = false;
+      e.preventDefault();
+    }
+  });
 
   video.addEventListener('timeupdate', function () {
     if (serverSeeking) return;
