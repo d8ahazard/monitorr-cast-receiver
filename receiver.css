@@ -1,5 +1,5 @@
 /* ══════════════════════════════════════════════════════════════════════════════
-   Monitorr Cast Receiver v2.2.3
+   Monitorr Cast Receiver v2.2.4
    ══════════════════════════════════════════════════════════════════════════════ */
 
 :root {
@@ -121,6 +121,7 @@ html, body {
 
 .mr-controls-row {
   display: flex; align-items: center; gap: 16px;
+  position: relative;
 }
 
 .mr-poster {
@@ -149,7 +150,9 @@ html, body {
 
 .mr-buttons {
   display: flex; align-items: center; justify-content: center; gap: 12px;
-  flex: 0 0 auto;
+  position: absolute;
+  left: 50%; transform: translateX(-50%);
+  pointer-events: auto;
 }
 
 .mr-btn {

@@ -1,6 +1,6 @@
 'use strict';
 
-// ─── Monitorr Cast Receiver v2.2.3 ──────────────────────────────────────────
+// ─── Monitorr Cast Receiver v2.2.4 ──────────────────────────────────────────
 //
 // Uses PlayerManager interceptors (not custom namespace for media).
 // The SDK owns the media state machine and UI. We own the player (HLS.js)
@@ -9,7 +9,7 @@
 
 (function () {
 
-  var VERSION = '2.2.3';
+  var VERSION = '2.2.4';
   var TAG = '[Monitorr v' + VERSION + ']';
   var MONITORR_NS = 'urn:x-cast:com.monitorr.cast';
 
@@ -935,8 +935,13 @@
     if (hlsSessionId && monitorrOrigin) {
       var url = monitorrOrigin + '/api/cast/hls/' + hlsSessionId + '/kill';
       console.log(TAG, 'Killing server session:', hlsSessionId);
-      try { navigator.sendBeacon(url); } catch (e) {
-        fetch(url, { method: 'POST', keepalive: true }).catch(function () {});
+      try {
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', url, false);
+        xhr.send();
+      } catch (e) {
+        console.log(TAG, 'Kill XHR failed, trying fetch:', e.message);
+        fetch(url, { keepalive: true }).catch(function () {});
       }
     }
   }
