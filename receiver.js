@@ -1,6 +1,6 @@
 'use strict';
 
-// ─── Monitorr Cast Receiver v2.4.5 ──────────────────────────────────────────
+// ─── Monitorr Cast Receiver v2.4.6 ──────────────────────────────────────────
 //
 // Uses PlayerManager interceptors (not custom namespace for media).
 // The SDK owns the media state machine and UI. We own the player (HLS.js)
@@ -9,7 +9,7 @@
 
 (function () {
 
-  var VERSION = '2.4.5';
+  var VERSION = '2.4.6';
   var TAG = '[Monitorr v' + VERSION + ']';
   var MONITORR_NS = 'urn:x-cast:com.monitorr.cast';
 
@@ -62,6 +62,22 @@
 
   var subtitleTracks = [];
   var activeSubIndex = -1;
+  var heartbeatTimer = null;
+
+  function startHeartbeat() {
+    stopHeartbeat();
+    sendHeartbeat();
+    heartbeatTimer = setInterval(sendHeartbeat, 10000);
+  }
+
+  function stopHeartbeat() {
+    if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
+  }
+
+  function sendHeartbeat() {
+    if (!hlsSessionId || !monitorrOrigin) return;
+    fetch(monitorrOrigin + '/api/cast/hls/' + hlsSessionId + '/heartbeat', { method: 'POST' }).catch(function () {});
+  }
 
   // ── LOAD Interceptor ───────────────────────────────────────────────────────
 
@@ -94,6 +110,8 @@
       hlsSessionId = match ? match[1] : null;
 
       try { monitorrOrigin = new URL(url).origin; } catch (e) { monitorrOrigin = null; }
+
+      startHeartbeat();
 
       var startTime = request.currentTime || 0;
       if (startTime > 0) seekOffset = startTime;
@@ -287,6 +305,7 @@
   }
 
   function destroyHls() {
+    stopHeartbeat();
     if (hls) { hls.detachMedia(); hls.destroy(); hls = null; }
     video.pause();
     video.removeAttribute('src');
