@@ -8,7 +8,7 @@
 
 (function () {
 
-  var VERSION = '0.4.0';
+  var VERSION = '0.4.1';
   var TAG = '[Monitorr v' + VERSION + ']';
   var MEDIA_NS = 'urn:x-cast:com.google.cast.media';
   var MONITORR_NS = 'urn:x-cast:com.monitorr.cast';
@@ -385,5 +385,21 @@
   context.start(opts);
   console.log(TAG, 'Receiver started');
   showIdle();
+
+  // Suppress Android system media controls on CCwGTV
+  if ('mediaSession' in navigator) {
+    navigator.mediaSession.metadata = null;
+    ['play','pause','seekbackward','seekforward','seekto','previoustrack','nexttrack','stop'].forEach(function (a) {
+      try { navigator.mediaSession.setActionHandler(a, function () {}); } catch (e) {}
+    });
+  }
+
+  // Hide any SDK-injected elements
+  setTimeout(function () {
+    document.querySelectorAll('cast-media-player, .overlay:not(#mr-overlay)').forEach(function (el) {
+      el.style.display = 'none';
+      el.style.visibility = 'hidden';
+    });
+  }, 500);
 
 })();
