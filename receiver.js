@@ -10,7 +10,7 @@
 
 (function () {
 
-  var VERSION = '0.2.1';
+  var VERSION = '0.3.0';
   var TAG = '[Monitorr v' + VERSION + ']';
   var MEDIA_NS = 'urn:x-cast:com.google.cast.media';
   var MONITORR_NS = 'urn:x-cast:com.monitorr.cast';
@@ -105,7 +105,9 @@
     else realDuration = 0;
 
     lastMetadata = media.metadata || null;
-    customData = data.customData || (media.customData) || null;
+    // customData is inside media (from our sender) -- NOT at the LOAD level
+    customData = (media.customData && typeof media.customData === 'object') ? media.customData : null;
+    console.log(TAG, 'customData:', JSON.stringify(customData));
 
     isHlsContent = url.indexOf('.m3u8') !== -1 ||
       (media.contentType && media.contentType.indexOf('mpegURL') !== -1);
@@ -284,7 +286,6 @@
     video.pause();
     video.removeAttribute('src');
     video.load();
-    removeAllTracks();
     seekOffset = 0;
     currentUrl = null;
     subtitleTracks = [];
@@ -386,55 +387,105 @@
 
   // ── Subtitles ──────────────────────────────────────────────────────────────
 
+  // ── Subtitles (server-side burn-in) ──────────────────────────────────────
+
   function fetchSubtitleTracks() {
+    if (!hlsSessionId || !monitorrOrigin) return;
     var url = monitorrOrigin + '/api/cast/hls/' + hlsSessionId + '/subtitles';
     fetch(url)
       .then(function (r) { return r.json(); })
-      .then(function (tracks) {
-        subtitleTracks = tracks || [];
-        console.log(TAG, 'Subtitle tracks:', subtitleTracks.length);
-        updateCCButton();
-        // Auto-activate default track
-        for (var i = 0; i < subtitleTracks.length; i++) {
-          if (subtitleTracks[i].isDefault) { activateSubtitle(i); break; }
+      .then(function (data) {
+        subtitleTracks = data.tracks || [];
+        activeSubIndex = -1;
+        // Find if any sub is currently active
+        if (data.activeStreamIndex != null) {
+          for (var i = 0; i < subtitleTracks.length; i++) {
+            if (subtitleTracks[i].streamIndex === data.activeStreamIndex) {
+              activeSubIndex = i;
+              break;
+            }
+          }
         }
+        console.log(TAG, 'Subtitle tracks:', subtitleTracks.length, 'active:', activeSubIndex);
+        updateCCButton();
       })
-      .catch(function () { subtitleTracks = []; });
+      .catch(function () { subtitleTracks = []; updateCCButton(); });
   }
 
   function cycleSubtitle() {
     if (subtitleTracks.length === 0) return;
     var next = activeSubIndex + 1;
-    if (next >= subtitleTracks.length) next = -1;
-    activateSubtitle(next);
+    if (next >= subtitleTracks.length) next = -1; // cycle back to off
+    toggleSubtitle(next);
   }
 
-  function activateSubtitle(idx) {
-    activeSubIndex = idx;
-    removeAllTracks();
-    if (idx >= 0 && subtitleTracks[idx]) {
-      var tr = subtitleTracks[idx];
-      var trackEl = document.createElement('track');
-      trackEl.kind = 'subtitles';
-      trackEl.label = tr.title || tr.language;
-      trackEl.srclang = tr.language;
-      trackEl.src = monitorrOrigin + '/api/cast/hls/' + hlsSessionId + '/subs/' + tr.file;
-      trackEl.default = true;
-      video.appendChild(trackEl);
-      setTimeout(function () {
-        for (var i = 0; i < video.textTracks.length; i++) {
-          video.textTracks[i].mode = (i === video.textTracks.length - 1) ? 'showing' : 'hidden';
-        }
-      }, 200);
+  function toggleSubtitle(idx) {
+    if (!hlsSessionId || !monitorrOrigin) return;
+
+    showSpinner();
+    serverSeeking = true; // freeze UI during transcode restart
+
+    if (idx < 0) {
+      // Disable subs
+      var disableUrl = monitorrOrigin + '/api/cast/hls/' + hlsSessionId + '/subs/disable';
+      fetch(disableUrl, { method: 'POST' })
+        .then(function (r) { return r.json(); })
+        .then(function () { reloadAfterSubChange(-1); })
+        .catch(function (err) {
+          console.error(TAG, 'Disable subs failed:', err);
+          serverSeeking = false;
+          hideSpinner();
+        });
+    } else {
+      // Enable subs with burn-in
+      var track = subtitleTracks[idx];
+      var enableUrl = monitorrOrigin + '/api/cast/hls/' + hlsSessionId + '/subs/enable?streamIndex=' + track.streamIndex;
+      fetch(enableUrl, { method: 'POST' })
+        .then(function (r) { return r.json(); })
+        .then(function () { reloadAfterSubChange(idx); })
+        .catch(function (err) {
+          console.error(TAG, 'Enable subs failed:', err);
+          serverSeeking = false;
+          hideSpinner();
+        });
     }
-    updateCCButton();
-    flashOverlay();
   }
 
-  function removeAllTracks() {
-    var tracks = video.querySelectorAll('track');
-    for (var i = 0; i < tracks.length; i++) tracks[i].remove();
-    for (var j = 0; j < video.textTracks.length; j++) video.textTracks[j].mode = 'hidden';
+  function reloadAfterSubChange(newIdx) {
+    activeSubIndex = newIdx;
+    updateCCButton();
+
+    // Reload the HLS source (server has restarted transcode with/without subs)
+    var cacheBuster = Date.now().toString(36);
+    var reloadUrl = currentUrl.split('?')[0] + '?subs=' + cacheBuster;
+    currentUrl = reloadUrl;
+
+    if (hls) { hls.detachMedia(); hls.destroy(); hls = null; }
+
+    var newHls = new Hls({ enableWorker: false, maxBufferLength: 30, maxMaxBufferLength: 120, startLevel: -1 });
+    hls = newHls;
+    newHls.loadSource(reloadUrl);
+    newHls.once(Hls.Events.MANIFEST_PARSED, function () {
+      newHls.attachMedia(video);
+    });
+    newHls.once(Hls.Events.FRAG_BUFFERED, function () {
+      video.play().catch(function () {});
+      serverSeeking = false;
+      hideSpinner();
+      broadcastMediaStatus(0);
+      flashOverlay();
+      console.log(TAG, 'Subtitle change complete, active:', newIdx);
+    });
+    newHls.on(Hls.Events.ERROR, function (_, errData) {
+      if (errData.fatal) {
+        if (errData.type === Hls.ErrorTypes.NETWORK_ERROR) newHls.startLoad();
+        else if (errData.type === Hls.ErrorTypes.MEDIA_ERROR) newHls.recoverMediaError();
+      }
+    });
+
+    setTimeout(function () {
+      if (serverSeeking) { serverSeeking = false; hideSpinner(); video.play().catch(function () {}); }
+    }, 15000);
   }
 
   function updateCCButton() {
@@ -444,7 +495,7 @@
       return;
     }
     btnCC.style.display = 'flex';
-    if (activeSubIndex >= 0) {
+    if (activeSubIndex >= 0 && subtitleTracks[activeSubIndex]) {
       btnCC.classList.add('active');
       if (ccLabel) ccLabel.textContent = subtitleTracks[activeSubIndex].language.toUpperCase();
     } else {
@@ -456,10 +507,12 @@
   // ── Skip Buttons ───────────────────────────────────────────────────────────
 
   function updateSkipButtons() {
-    var hasPrev = customData && customData.prevEpisodeFileId;
-    var hasNext = customData && customData.nextEpisodeFileId;
+    // Only show skip buttons when we have actual episode file IDs (strings, not null/empty)
+    var hasPrev = customData && typeof customData.prevEpisodeFileId === 'string' && customData.prevEpisodeFileId.length > 0;
+    var hasNext = customData && typeof customData.nextEpisodeFileId === 'string' && customData.nextEpisodeFileId.length > 0;
     if (btnSkipPrev) btnSkipPrev.style.display = hasPrev ? 'flex' : 'none';
     if (btnSkipNext) btnSkipNext.style.display = hasNext ? 'flex' : 'none';
+    console.log(TAG, 'Skip buttons: prev=' + hasPrev + ' next=' + hasNext);
   }
 
   function requestSkip(direction) {
