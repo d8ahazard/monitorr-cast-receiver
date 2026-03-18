@@ -1,6 +1,6 @@
 'use strict';
 
-// ─── Monitorr Cast Receiver v2.2.5 ──────────────────────────────────────────
+// ─── Monitorr Cast Receiver v2.3.0 ──────────────────────────────────────────
 //
 // Uses PlayerManager interceptors (not custom namespace for media).
 // The SDK owns the media state machine and UI. We own the player (HLS.js)
@@ -9,7 +9,7 @@
 
 (function () {
 
-  var VERSION = '2.2.5';
+  var VERSION = '2.3.0';
   var TAG = '[Monitorr v' + VERSION + ']';
   var MONITORR_NS = 'urn:x-cast:com.monitorr.cast';
 
@@ -185,6 +185,7 @@
             hideSpinner();
             playerManager.broadcastStatus();
             flashOverlay();
+            reapplySubtitlesAfterSeek();
           });
           newHls.on(Hls.Events.ERROR, function (_, e) {
             if (e.fatal) {
@@ -310,7 +311,10 @@
       .catch(function () { setTimeout(fetchDuration, 5000); });
   }
 
-  // ── Subtitles (server-side burn-in) ────────────────────────────────────────
+  // ── Subtitles (sidecar WebVTT) ────────────────────────────────────────────
+
+  var vttCache = {};
+  var activeTextTrack = null;
 
   function fetchSubtitleTracks() {
     if (!hlsSessionId || !monitorrOrigin) return;
@@ -319,15 +323,97 @@
       .then(function (data) {
         subtitleTracks = data.tracks || [];
         activeSubIndex = -1;
-        if (data.activeStreamIndex != null) {
-          for (var i = 0; i < subtitleTracks.length; i++) {
-            if (subtitleTracks[i].streamIndex === data.activeStreamIndex) { activeSubIndex = i; break; }
-          }
-        }
-        console.log(TAG, 'Subs:', subtitleTracks.length, 'active:', activeSubIndex);
+        console.log(TAG, 'Subs:', subtitleTracks.length);
+        loadVttTracks();
         updateCCButton();
       })
       .catch(function () { subtitleTracks = []; updateCCButton(); });
+  }
+
+  function loadVttTracks() {
+    removeAllTextTracks();
+    for (var i = 0; i < subtitleTracks.length; i++) {
+      var t = subtitleTracks[i];
+      if (t.vttUrl && t.vttReady) {
+        fetchAndCacheVtt(i, t);
+      }
+    }
+  }
+
+  function fetchAndCacheVtt(idx, trackInfo) {
+    var url = monitorrOrigin + trackInfo.vttUrl;
+    fetch(url)
+      .then(function (r) { return r.text(); })
+      .then(function (vttText) {
+        vttCache[idx] = parseVttCues(vttText);
+        console.log(TAG, 'Cached VTT:', trackInfo.language, vttCache[idx].length, 'cues');
+      })
+      .catch(function (e) {
+        console.log(TAG, 'Failed to fetch VTT:', trackInfo.language, e.message);
+      });
+  }
+
+  function parseVttCues(vttText) {
+    var cues = [];
+    var lines = vttText.split('\n');
+    var i = 0;
+    while (i < lines.length) {
+      var line = lines[i].trim();
+      var match = line.match(/^(\d{2}):(\d{2}):(\d{2})\.(\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2})\.(\d{3})/);
+      if (!match) { i++; continue; }
+      var startSec = parseInt(match[1]) * 3600 + parseInt(match[2]) * 60 + parseInt(match[3]) + parseInt(match[4]) / 1000;
+      var endSec = parseInt(match[5]) * 3600 + parseInt(match[6]) * 60 + parseInt(match[7]) + parseInt(match[8]) / 1000;
+      i++;
+      var text = [];
+      while (i < lines.length && lines[i].trim() !== '') {
+        text.push(lines[i].trim());
+        i++;
+      }
+      if (text.length > 0) {
+        cues.push({ start: startSec, end: endSec, text: text.join('\n') });
+      }
+      i++;
+    }
+    return cues;
+  }
+
+  function removeAllTextTracks() {
+    activeTextTrack = null;
+    for (var i = video.textTracks.length - 1; i >= 0; i--) {
+      video.textTracks[i].mode = 'disabled';
+    }
+    var tracks = video.querySelectorAll('track');
+    for (var j = tracks.length - 1; j >= 0; j--) {
+      tracks[j].parentNode.removeChild(tracks[j]);
+    }
+  }
+
+  function applyCuesForOffset(trackIdx) {
+    removeAllTextTracks();
+    if (trackIdx < 0 || !vttCache[trackIdx]) return;
+
+    var cues = vttCache[trackIdx];
+    var offset = seekOffset;
+    var textTrack = video.addTextTrack('subtitles', subtitleTracks[trackIdx].language, subtitleTracks[trackIdx].language);
+    textTrack.mode = 'showing';
+    activeTextTrack = textTrack;
+
+    for (var i = 0; i < cues.length; i++) {
+      var adjusted_start = cues[i].start - offset;
+      var adjusted_end = cues[i].end - offset;
+      if (adjusted_end <= 0) continue;
+      if (adjusted_start < 0) adjusted_start = 0;
+      try {
+        textTrack.addCue(new VTTCue(adjusted_start, adjusted_end, cues[i].text));
+      } catch (e) {}
+    }
+    console.log(TAG, 'Applied', textTrack.cues ? textTrack.cues.length : 0, 'cues at offset', offset);
+  }
+
+  function reapplySubtitlesAfterSeek() {
+    if (activeSubIndex >= 0 && vttCache[activeSubIndex]) {
+      applyCuesForOffset(activeSubIndex);
+    }
   }
 
   function cycleSubtitle() {
@@ -338,38 +424,26 @@
   }
 
   function toggleSubtitle(idx) {
-    if (!hlsSessionId || !monitorrOrigin) return;
-    showSpinner();
-    serverSeeking = true;
+    activeSubIndex = idx;
+    updateCCButton();
 
-    var url = idx < 0
-      ? monitorrOrigin + '/api/cast/hls/' + hlsSessionId + '/subs/disable'
-      : monitorrOrigin + '/api/cast/hls/' + hlsSessionId + '/subs/enable?streamIndex=' + subtitleTracks[idx].streamIndex;
+    if (idx < 0) {
+      removeAllTextTracks();
+      console.log(TAG, 'Subtitles off');
+      return;
+    }
 
-    fetch(url, { method: 'POST' })
-      .then(function (r) { return r.json(); })
-      .then(function () {
-        activeSubIndex = idx;
-        updateCCButton();
-        var cacheBuster = Date.now().toString(36);
-        var reloadUrl = currentUrl.split('?')[0] + '?subs=' + cacheBuster;
-        currentUrl = reloadUrl;
-        destroyHls();
-        var newHls = new Hls({ enableWorker: false, maxBufferLength: 30, maxMaxBufferLength: 120, startLevel: -1 });
-        hls = newHls;
-        newHls.loadSource(reloadUrl);
-        newHls.once(Hls.Events.MANIFEST_PARSED, function () { newHls.attachMedia(video); });
-        newHls.once(Hls.Events.FRAG_BUFFERED, function () {
-          video.play().catch(function () {});
-          serverSeeking = false;
-          hideSpinner();
-          playerManager.broadcastStatus();
-          flashOverlay();
-        });
-        newHls.on(Hls.Events.ERROR, function (_, e) { if (e.fatal && e.type === Hls.ErrorTypes.NETWORK_ERROR) newHls.startLoad(); });
-        setTimeout(function () { if (serverSeeking) { serverSeeking = false; hideSpinner(); } }, 20000);
-      })
-      .catch(function () { serverSeeking = false; hideSpinner(); });
+    var track = subtitleTracks[idx];
+    if (track.vttUrl && track.vttReady && vttCache[idx]) {
+      applyCuesForOffset(idx);
+      console.log(TAG, 'Sidecar subtitle:', track.language);
+    } else if (track.vttUrl && track.vttReady) {
+      fetchAndCacheVtt(idx, track);
+      setTimeout(function () { applyCuesForOffset(idx); }, 1500);
+      console.log(TAG, 'Fetching sidecar then applying:', track.language);
+    } else {
+      console.log(TAG, 'No VTT available for track:', track.language, '- image-based subs not supported in sidecar mode');
+    }
   }
 
   function updateCCButton() {
@@ -777,6 +851,7 @@
             hideSpinner();
             playerManager.broadcastStatus();
             flashOverlay();
+            reapplySubtitlesAfterSeek();
           });
           newHls.on(Hls.Events.ERROR, function (_, e) {
             if (e.fatal) {
