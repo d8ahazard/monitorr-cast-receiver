@@ -1,6 +1,6 @@
 'use strict';
 
-// ─── Monitorr Cast Receiver v2.4.7 ──────────────────────────────────────────
+// ─── Monitorr Cast Receiver v2.4.8 ──────────────────────────────────────────
 //
 // Uses PlayerManager interceptors (not custom namespace for media).
 // The SDK owns the media state machine and UI. We own the player (HLS.js)
@@ -9,7 +9,7 @@
 
 (function () {
 
-  var VERSION = '2.4.7';
+  var VERSION = '2.4.8';
   var TAG = '[Monitorr v' + VERSION + ']';
   var MONITORR_NS = 'urn:x-cast:com.monitorr.cast';
 
@@ -76,7 +76,7 @@
 
   function sendHeartbeat() {
     if (!hlsSessionId || !monitorrOrigin) return;
-    fetch(monitorrOrigin + '/api/cast/hls/' + hlsSessionId + '/heartbeat', { method: 'POST' }).catch(function () {});
+    fetch(monitorrOrigin + '/api/cast/hls/' + hlsSessionId + '/heartbeat').catch(function () {});
   }
 
   // ── LOAD Interceptor ───────────────────────────────────────────────────────
