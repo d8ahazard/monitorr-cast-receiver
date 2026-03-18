@@ -1,6 +1,6 @@
 'use strict';
 
-// ─── Monitorr Cast Receiver v2.2.4 ──────────────────────────────────────────
+// ─── Monitorr Cast Receiver v2.2.5 ──────────────────────────────────────────
 //
 // Uses PlayerManager interceptors (not custom namespace for media).
 // The SDK owns the media state machine and UI. We own the player (HLS.js)
@@ -9,7 +9,7 @@
 
 (function () {
 
-  var VERSION = '2.2.4';
+  var VERSION = '2.2.5';
   var TAG = '[Monitorr v' + VERSION + ']';
   var MONITORR_NS = 'urn:x-cast:com.monitorr.cast';
 
@@ -815,6 +815,13 @@
     if (!isOwnedRemoteKey(key)) return;
 
     if (!isOverlayVisible() && (key === 'Backspace' || key === 'Escape')) {
+      consumeKeyEvent(e);
+      console.log(TAG, 'Back pressed with overlay hidden — stopping playback and exiting');
+      video.pause();
+      killServerSession();
+      destroyHls();
+      showIdle();
+      context.stop();
       return;
     }
 
