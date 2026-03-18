@@ -1,9 +1,21 @@
-/* Monitorr Cast Receiver v0.5.2 -- styled cast-media-player */
+/* Monitorr Cast Receiver v0.5.2 */
+
+#mr-video {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+  z-index: 0;
+}
+
 cast-media-player {
   --bounding-box-color: transparent;
-  --background-color: #0d1117;
+  --background-color: transparent;
   --progress-color: #03a9f4;
   --splash-color: #3f51b5;
   --splash-size: 180px;
   --font-family: 'Inter', -apple-system, sans-serif;
+  z-index: 1;
 }
