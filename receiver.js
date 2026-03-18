@@ -1,6 +1,6 @@
 'use strict';
 
-// ─── Monitorr Cast Receiver v2.1.6 ──────────────────────────────────────────
+// ─── Monitorr Cast Receiver v2.1.7 ──────────────────────────────────────────
 //
 // Uses PlayerManager interceptors (not custom namespace for media).
 // The SDK owns the media state machine and UI. We own the player (HLS.js)
@@ -9,7 +9,7 @@
 
 (function () {
 
-  var VERSION = '2.1.6';
+  var VERSION = '2.1.7';
   var TAG = '[Monitorr v' + VERSION + ']';
   var MONITORR_NS = 'urn:x-cast:com.monitorr.cast';
 
@@ -218,10 +218,14 @@
           var s = msg.status[i];
           s.supportedMediaCommands = cast.framework.messages.Command.ALL_BASIC_MEDIA |
             cast.framework.messages.Command.STREAM_TRANSFER;
-          // Inject seekOffset into currentTime
-          if (!serverSeeking && video && currentUrl) {
+
+          if (serverSeeking || seekLockedTime !== null) {
+            s.playerState = cast.framework.messages.PlayerState.BUFFERING;
+            s.currentTime = seekLockedTime !== null ? seekLockedTime : seekOffset;
+          } else if (video && currentUrl) {
             s.currentTime = seekOffset + (video.currentTime || 0);
           }
+
           if (s.media) {
             if (realDuration > 0) s.media.duration = realDuration;
             s.media.streamType = cast.framework.messages.StreamType.BUFFERED;
