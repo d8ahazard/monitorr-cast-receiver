@@ -1,6 +1,6 @@
 'use strict';
 
-// ─── Monitorr Cast Receiver v2.4.0 ──────────────────────────────────────────
+// ─── Monitorr Cast Receiver v2.4.1 ──────────────────────────────────────────
 //
 // Uses PlayerManager interceptors (not custom namespace for media).
 // The SDK owns the media state machine and UI. We own the player (HLS.js)
@@ -9,7 +9,7 @@
 
 (function () {
 
-  var VERSION = '2.4.0';
+  var VERSION = '2.4.1';
   var TAG = '[Monitorr v' + VERSION + ']';
   var MONITORR_NS = 'urn:x-cast:com.monitorr.cast';
 
@@ -962,6 +962,7 @@
       consumeKeyEvent(e);
       console.log(TAG, 'Back pressed with overlay hidden — stopping playback and exiting');
       video.pause();
+      reportProgressFinal();
       killServerSession();
       destroyHls();
       showIdle();
@@ -1084,8 +1085,11 @@
 
   function killServerSession() {
     if (hlsSessionId && monitorrOrigin) {
+      var pos = Math.floor(getCurrentTime() * 1000);
+      var dur = realDuration > 0 ? Math.floor(realDuration * 1000) : 0;
       var url = monitorrOrigin + '/api/cast/hls/' + hlsSessionId + '/kill';
-      console.log(TAG, 'Killing server session:', hlsSessionId);
+      if (pos > 0 && dur > 0) url += '?positionMs=' + pos + '&durationMs=' + dur;
+      console.log(TAG, 'Killing server session:', hlsSessionId, 'at', pos, 'ms');
       try {
         var xhr = new XMLHttpRequest();
         xhr.open('GET', url, false);
@@ -1147,23 +1151,23 @@
   }
 
   function reportProgress() {
-    if (!monitorrOrigin || !customData || !customData.mediaItemId) return;
+    if (!monitorrOrigin || !hlsSessionId) return;
     if (video.paused && !video.ended) return;
     var pos = Math.floor(getCurrentTime() * 1000);
     var dur = realDuration > 0 ? Math.floor(realDuration * 1000) : 0;
     if (pos <= 0 || dur <= 0) return;
-    var url = monitorrOrigin + '/api/media/playback/progress';
-    var body = JSON.stringify({ mediaItemId: customData.mediaItemId, positionMs: pos, durationMs: dur });
+    var url = monitorrOrigin + '/api/cast/hls/' + hlsSessionId + '/progress';
+    var body = JSON.stringify({ positionMs: pos, durationMs: dur });
     fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body }).catch(function () {});
   }
 
   function reportProgressFinal() {
-    if (!monitorrOrigin || !customData || !customData.mediaItemId) return;
+    if (!monitorrOrigin || !hlsSessionId) return;
     var pos = Math.floor(getCurrentTime() * 1000);
     var dur = realDuration > 0 ? Math.floor(realDuration * 1000) : 0;
     if (pos <= 0 || dur <= 0) return;
-    var url = monitorrOrigin + '/api/media/playback/progress';
-    var body = JSON.stringify({ mediaItemId: customData.mediaItemId, positionMs: pos, durationMs: dur });
+    var url = monitorrOrigin + '/api/cast/hls/' + hlsSessionId + '/progress';
+    var body = JSON.stringify({ positionMs: pos, durationMs: dur });
     try {
       var xhr = new XMLHttpRequest();
       xhr.open('POST', url, false);
