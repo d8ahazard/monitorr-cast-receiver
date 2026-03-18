@@ -120,6 +120,28 @@
     }
   );
 
+  // ── PLAY / PAUSE Interceptors ─────────────────────────────────────────────
+
+  playerManager.setMessageInterceptor(
+    cast.framework.messages.MessageType.PLAY,
+    function () {
+      console.log(TAG, 'PLAY intercepted');
+      video.play().catch(function () {});
+      flashOverlay();
+      return null;
+    }
+  );
+
+  playerManager.setMessageInterceptor(
+    cast.framework.messages.MessageType.PAUSE,
+    function () {
+      console.log(TAG, 'PAUSE intercepted');
+      video.pause();
+      flashOverlay();
+      return null;
+    }
+  );
+
   // ── SEEK Interceptor ───────────────────────────────────────────────────────
 
   playerManager.setMessageInterceptor(
