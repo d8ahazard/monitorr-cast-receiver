@@ -1,6 +1,6 @@
 'use strict';
 
-// ─── Monitorr Cast Receiver v2.1.8 ──────────────────────────────────────────
+// ─── Monitorr Cast Receiver v2.1.9 ──────────────────────────────────────────
 //
 // Uses PlayerManager interceptors (not custom namespace for media).
 // The SDK owns the media state machine and UI. We own the player (HLS.js)
@@ -9,7 +9,7 @@
 
 (function () {
 
-  var VERSION = '2.1.8';
+  var VERSION = '2.1.9';
   var TAG = '[Monitorr v' + VERSION + ']';
   var MONITORR_NS = 'urn:x-cast:com.monitorr.cast';
 
@@ -400,8 +400,8 @@
     playerManager.broadcastStatus();
   });
 
-  if (btnRw) btnRw.addEventListener('click', function () { seekByDelta(-10); });
-  if (btnFf) btnFf.addEventListener('click', function () { seekByDelta(10); });
+  if (btnRw) btnRw.addEventListener('click', function () { tapSeek(-5); });
+  if (btnFf) btnFf.addEventListener('click', function () { tapSeek(10); });
 
   function updatePlayPauseIcon() {
     if (!iconPlay || !iconPause) return;
@@ -415,11 +415,12 @@
   video.addEventListener('timeupdate', function () {
     var total = realDuration > 0 ? realDuration : (isFinite(video.duration) ? video.duration : 0);
 
-    if (serverSeeking || seekLockedTime !== null) {
-      var locked = seekLockedTime !== null ? seekLockedTime : getCurrentPlaybackTime();
-      if (timeLeft) timeLeft.textContent = formatTime(locked);
+    if (seekInteractionActive || serverSeeking || seekLockedTime !== null) {
+      var frozen = seekPreviewTime !== null ? seekPreviewTime :
+                   seekLockedTime !== null ? seekLockedTime : getCurrentPlaybackTime();
+      if (timeLeft) timeLeft.textContent = formatTime(frozen);
       if (timeRight) timeRight.textContent = formatTime(total);
-      if (total > 0 && seekPlayed) seekPlayed.style.width = Math.min(100, (locked / total) * 100) + '%';
+      if (total > 0 && seekPlayed) seekPlayed.style.width = Math.min(100, (frozen / total) * 100) + '%';
       return;
     }
 
@@ -561,12 +562,14 @@
     return realDuration > 0 ? realDuration : (isFinite(video.duration) ? video.duration : 0);
   }
 
-  // ── Seek preview state ──────────────────────────────────────────────────
+  // ── Seek interaction state ──────────────────────────────────────────────
 
   var seekPreviewTime = null;
   var seekHoldCount = 0;
   var seekLockedTime = null;
   var seekKeepaliveTimer = null;
+  var seekDebounceTimer = null;
+  var seekInteractionActive = false;
 
   function startSeekKeepalive() {
     stopSeekKeepalive();
@@ -583,6 +586,17 @@
     }
   }
 
+  function beginSeekInteraction() {
+    if (!seekInteractionActive) {
+      seekInteractionActive = true;
+      seekPreviewTime = getCurrentPlaybackTime();
+    }
+  }
+
+  function isSeekActive() {
+    return seekInteractionActive || seekPreviewTime !== null;
+  }
+
   function getSeekStep() {
     if (seekHoldCount < 3) return 5;
     if (seekHoldCount < 8) return 10;
@@ -591,27 +605,50 @@
     return 120;
   }
 
-  function nudgeSeekPreview(direction) {
+  function updateSeekPreviewVisuals() {
     var duration = getDuration();
-    if (duration <= 0) return;
-
-    if (seekPreviewTime === null) seekPreviewTime = getCurrentPlaybackTime();
-    var step = getSeekStep();
-    seekHoldCount++;
-
-    seekPreviewTime += direction * step;
-    seekPreviewTime = Math.max(0, Math.min(duration, seekPreviewTime));
-
+    if (duration <= 0 || seekPreviewTime === null) return;
     if (seekPreview) {
       seekPreview.classList.add('active');
       seekPreview.style.width = (seekPreviewTime / duration * 100) + '%';
     }
     if (timeLeft) timeLeft.textContent = formatTime(seekPreviewTime);
+    if (duration > 0 && seekPlayed) seekPlayed.style.width = Math.min(100, (seekPreviewTime / duration) * 100) + '%';
+  }
+
+  function nudgeSeekPreview(direction) {
+    var duration = getDuration();
+    if (duration <= 0) return;
+
+    beginSeekInteraction();
+    var step = getSeekStep();
+    seekHoldCount++;
+
+    seekPreviewTime += direction * step;
+    seekPreviewTime = Math.max(0, Math.min(duration, seekPreviewTime));
+    updateSeekPreviewVisuals();
+  }
+
+  function tapSeek(deltaSeconds) {
+    var duration = getDuration();
+    if (duration <= 0) return;
+
+    beginSeekInteraction();
+    seekPreviewTime += deltaSeconds;
+    seekPreviewTime = Math.max(0, Math.min(duration, seekPreviewTime));
+    updateSeekPreviewVisuals();
+
+    clearTimeout(seekDebounceTimer);
+    seekDebounceTimer = setTimeout(function () {
+      commitSeekPreview();
+    }, 800);
   }
 
   function cancelSeekPreview() {
+    clearTimeout(seekDebounceTimer);
     seekPreviewTime = null;
     seekHoldCount = 0;
+    seekInteractionActive = false;
     if (seekPreview) {
       seekPreview.classList.remove('active');
       seekPreview.style.width = '0';
@@ -619,6 +656,7 @@
   }
 
   function commitSeekPreview() {
+    clearTimeout(seekDebounceTimer);
     if (seekPreviewTime === null) return;
     var target = seekPreviewTime;
     cancelSeekPreview();
@@ -690,10 +728,14 @@
   window.addEventListener('keydown', function (e) {
     var key = normalizeRemoteKey(e);
     if (!isOwnedRemoteKey(key)) return;
+
+    if (!isOverlayVisible() && (key === 'Backspace' || key === 'Escape')) {
+      return;
+    }
+
     consumeKeyEvent(e);
 
     if (!isOverlayVisible()) {
-      if (key === 'Backspace' || key === 'Escape') return;
       showOverlayAndFocus();
       return;
     }
@@ -702,6 +744,7 @@
 
     if (key === 'ArrowUp') {
       if (activeRow === 'buttons') {
+        cancelSeekPreview();
         setSeekRowFocus();
       }
       return;
@@ -722,7 +765,11 @@
 
     if (key === 'ArrowLeft') {
       if (activeRow === 'seek') {
-        nudgeSeekPreview(-1);
+        if (e.repeat) {
+          nudgeSeekPreview(-1);
+        } else {
+          tapSeek(-5);
+        }
       } else {
         setButtonFocus(focusIndex <= 0 ? getVisibleButtons().length - 1 : focusIndex - 1);
       }
@@ -731,7 +778,11 @@
 
     if (key === 'ArrowRight') {
       if (activeRow === 'seek') {
-        nudgeSeekPreview(1);
+        if (e.repeat) {
+          nudgeSeekPreview(1);
+        } else {
+          tapSeek(10);
+        }
       } else {
         setButtonFocus(focusIndex + 1);
       }
@@ -740,7 +791,10 @@
 
     if (key === 'Enter') {
       if (activeRow === 'seek') {
-        commitSeekPreview();
+        if (isSeekActive()) {
+          clearTimeout(seekDebounceTimer);
+          commitSeekPreview();
+        }
       } else {
         var btns2 = getVisibleButtons();
         if (focusIndex >= 0 && focusIndex < btns2.length) btns2[focusIndex].click();
@@ -749,8 +803,11 @@
     }
 
     if (key === 'Backspace' || key === 'Escape') {
-      cancelSeekPreview();
-      hideOverlayNow();
+      if (isSeekActive()) {
+        cancelSeekPreview();
+      } else if (isOverlayVisible()) {
+        hideOverlayNow();
+      }
       return;
     }
 
