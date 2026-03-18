@@ -1,10 +1,86 @@
-/* Monitorr Cast Receiver */
+/* Monitorr Cast Receiver v2.0.0 */
+
+body {
+  margin: 0;
+  background: #0d1117;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
 cast-media-player {
   --bounding-box-color: transparent;
   --background-color: #0d1117;
   --progress-color: #03a9f4;
   --splash-color: #3f51b5;
-  --splash-size: 180px;
+  --splash-size: 200px;
   --font-family: 'Inter', -apple-system, sans-serif;
   --playback-logo-image: none;
+  --theme-hue: 199;
+  --accent-color: #03a9f4;
+}
+
+/* ── Idle Screen ─────────────────────────────────────────────────────────── */
+
+#mr-idle {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #0a0e1a 0%, #0d1117 40%, #111827 100%);
+  transition: opacity 0.5s ease;
+}
+
+#mr-idle.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.idle-brand {
+  font-size: 5rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  background: linear-gradient(135deg, #3f51b5, #03a9f4);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  animation: idle-glow 4s ease-in-out infinite alternate;
+}
+
+.idle-status {
+  margin-top: 1rem;
+  font-size: 1.2rem;
+  color: #a0a3b1;
+  letter-spacing: 0.04em;
+}
+
+.idle-version {
+  margin-top: 2rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.3);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+@keyframes idle-glow {
+  0%   { opacity: 0.8; }
+  100% { opacity: 1; }
+}
+
+.idle-brand::after {
+  content: '';
+  display: block;
+  width: 60px;
+  height: 2px;
+  margin: 0.75rem auto 0;
+  background: #03a9f4;
+  border-radius: 1px;
+  animation: idle-line 3s ease-in-out infinite;
+}
+
+@keyframes idle-line {
+  0%, 100% { width: 60px; opacity: 0.5; }
+  50%      { width: 120px; opacity: 1; }
 }

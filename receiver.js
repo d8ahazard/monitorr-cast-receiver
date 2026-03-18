@@ -2,9 +2,10 @@
 
 (function () {
 
-  var TAG = '[Monitorr]';
+  var TAG = '[Monitorr v2.0.0]';
   var context = cast.framework.CastReceiverContext.getInstance();
   var playerManager = context.getPlayerManager();
+  var idleScreen = document.getElementById('mr-idle');
 
   var realDuration = 0;
   var seekOffset = 0;
@@ -16,6 +17,7 @@
   var subtitleTracks = [];
   var lastMetadata = null;
   var lastContentType = null;
+  var isInternalReload = false;
 
   // ── Controls API ───────────────────────────────────────────────────────────
 
@@ -47,25 +49,29 @@
       if (!media) return request;
 
       var url = media.contentId || '';
-      console.log(TAG, 'LOAD', url);
+      console.log(TAG, 'LOAD', url, 'internal:', isInternalReload);
 
-      seekOffset = 0;
-      serverSeeking = false;
-      currentUrl = url;
-      subtitleTracks = [];
+      if (!isInternalReload) {
+        // Fresh load from sender -- reset everything
+        seekOffset = 0;
+        serverSeeking = false;
+        currentUrl = url;
+        subtitleTracks = [];
 
-      realDuration = (media.duration > 0) ? media.duration : 0;
-      lastMetadata = media.metadata || null;
-      lastContentType = media.contentType || 'application/x-mpegURL';
+        realDuration = (media.duration > 0) ? media.duration : 0;
+        lastMetadata = media.metadata || null;
+        lastContentType = media.contentType || 'application/x-mpegURL';
 
-      isHlsContent = url.indexOf('.m3u8') !== -1 ||
-        (media.contentType && media.contentType.indexOf('mpegURL') !== -1);
+        isHlsContent = url.indexOf('.m3u8') !== -1 ||
+          (media.contentType && media.contentType.indexOf('mpegURL') !== -1);
 
-      var match = url.match(/\/hls\/([a-f0-9]+)\//);
-      hlsSessionId = match ? match[1] : null;
-      try { monitorrOrigin = new URL(url).origin; } catch (e) { monitorrOrigin = null; }
+        var match = url.match(/\/hls\/([a-f0-9]+)\//);
+        hlsSessionId = match ? match[1] : null;
+        try { monitorrOrigin = new URL(url).origin; } catch (e) { monitorrOrigin = null; }
 
-      if (request.currentTime > 0) seekOffset = request.currentTime;
+        if (request.currentTime > 0) seekOffset = request.currentTime;
+      }
+      // Internal reload: keep seekOffset, hlsSessionId, etc.
 
       // Force VOD semantics
       media.streamType = cast.framework.messages.StreamType.BUFFERED;
@@ -86,13 +92,15 @@
       }
       media.supportedMediaCommands = cmds;
 
-      // Fetch real duration + subtitle tracks async
-      if (hlsSessionId && monitorrOrigin) {
+      // Hide idle screen on load
+      if (idleScreen) idleScreen.classList.add('hidden');
+
+      // Fetch real duration + subtitle tracks async (only on fresh load)
+      if (!isInternalReload && hlsSessionId && monitorrOrigin) {
         if (realDuration <= 0) fetchDuration();
-        fetchAndExposeSubtitleTracks();
       }
 
-      // Return request -- Shaka loads the HLS
+      isInternalReload = false;
       return request;
     }
   );
@@ -105,7 +113,6 @@
       var targetTime = request.currentTime;
       console.log(TAG, 'SEEK to', targetTime);
 
-      // DirectPlay: let Shaka handle it
       if (!isHlsContent || !hlsSessionId || !monitorrOrigin) return request;
       if (serverSeeking) return null;
 
@@ -150,21 +157,23 @@
       if (!hlsSessionId || !monitorrOrigin) return request;
 
       if (activeIds.length === 0) {
-        // Subs OFF
+        serverSeeking = true;
         fetch(monitorrOrigin + '/api/cast/hls/' + hlsSessionId + '/subs/disable', { method: 'POST' })
           .then(function (r) { return r.json(); })
           .then(function () { return reloadPlayer(currentUrl.split('?')[0] + '?nosubs=' + Date.now().toString(36)); })
-          .catch(function () {});
+          .then(function () { serverSeeking = false; })
+          .catch(function () { serverSeeking = false; });
       } else {
-        // Subs ON
         var trackId = activeIds[0];
         for (var i = 0; i < subtitleTracks.length; i++) {
           if (subtitleTracks[i].trackId === trackId) {
             var si = subtitleTracks[i].streamIndex;
+            serverSeeking = true;
             fetch(monitorrOrigin + '/api/cast/hls/' + hlsSessionId + '/subs/enable?streamIndex=' + si, { method: 'POST' })
               .then(function (r) { return r.json(); })
               .then(function () { return reloadPlayer(currentUrl.split('?')[0] + '?subs=' + Date.now().toString(36)); })
-              .catch(function () {});
+              .then(function () { serverSeeking = false; })
+              .catch(function () { serverSeeking = false; });
             break;
           }
         }
@@ -200,13 +209,21 @@
   playerManager.addEventListener(
     cast.framework.events.EventType.PLAYER_LOAD_COMPLETE,
     function () {
-      console.log(TAG, 'Load complete');
+      console.log(TAG, 'Load complete, seekOffset:', seekOffset, 'duration:', realDuration);
+
       if (realDuration <= 0) fetchDuration();
+
       var mi = playerManager.getMediaInformation();
       if (mi) {
         if (realDuration > 0) mi.duration = realDuration;
         mi.streamType = cast.framework.messages.StreamType.BUFFERED;
       }
+
+      // Expose subtitle tracks after media is loaded (mi is guaranteed non-null here)
+      if (hlsSessionId && monitorrOrigin && subtitleTracks.length === 0) {
+        fetchAndExposeSubtitleTracks();
+      }
+
       playerManager.broadcastStatus();
     }
   );
@@ -215,6 +232,7 @@
 
   function reloadPlayer(url) {
     currentUrl = url;
+    isInternalReload = true;
     var loadReq = new cast.framework.messages.LoadRequestData();
     loadReq.media = new cast.framework.messages.MediaInformation();
     loadReq.media.contentId = url;
@@ -285,7 +303,9 @@
           console.log(TAG, 'Exposed', castTracks.length, 'subtitle tracks');
         }
       })
-      .catch(function () {});
+      .catch(function (err) {
+        console.error(TAG, 'Subtitle fetch failed:', err);
+      });
   }
 
   // ── Start ──────────────────────────────────────────────────────────────────
@@ -298,6 +318,13 @@
   opts.playbackConfig = playbackConfig;
   opts.disableIdleTimeout = true;
   opts.maxInactivity = 3600;
+
+  playerManager.addEventListener(
+    cast.framework.events.EventType.MEDIA_FINISHED,
+    function () {
+      if (idleScreen) idleScreen.classList.remove('hidden');
+    }
+  );
 
   context.start(opts);
   console.log(TAG, 'Receiver started');

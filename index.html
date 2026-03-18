@@ -3,12 +3,19 @@
 <head>
   <meta charset="utf-8">
   <title>Monitorr</title>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="receiver.css">
   <script src="//www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
 </head>
 <body>
   <cast-media-player></cast-media-player>
+
+  <div id="mr-idle">
+    <div class="idle-brand">Monitorr</div>
+    <div class="idle-status">Ready to cast</div>
+    <div class="idle-version">v2.0.0</div>
+  </div>
+
   <script src="receiver.js"></script>
 </body>
 </html>
