@@ -1,6 +1,6 @@
 'use strict';
 
-// ─── Monitorr Cast Receiver v2.3.1 ──────────────────────────────────────────
+// ─── Monitorr Cast Receiver v2.3.2 ──────────────────────────────────────────
 //
 // Uses PlayerManager interceptors (not custom namespace for media).
 // The SDK owns the media state machine and UI. We own the player (HLS.js)
@@ -9,7 +9,7 @@
 
 (function () {
 
-  var VERSION = '2.3.1';
+  var VERSION = '2.3.2';
   var TAG = '[Monitorr v' + VERSION + ']';
   var MONITORR_NS = 'urn:x-cast:com.monitorr.cast';
 
@@ -317,10 +317,15 @@
   var activeTextTrack = null;
   var subPollTimer = null;
   var subPollAttempts = 0;
+  var subsReady = false;
 
   function fetchSubtitleTracks() {
     if (!hlsSessionId || !monitorrOrigin) return;
+    vttCache = {};
+    subsReady = false;
     subPollAttempts = 0;
+    activeSubIndex = -1;
+    if (btnCC) btnCC.style.display = 'none';
     pollSubtitleTracks();
   }
 
@@ -330,54 +335,81 @@
       .then(function (r) { return r.json(); })
       .then(function (data) {
         subtitleTracks = data.tracks || [];
-        console.log(TAG, 'Subs poll #' + subPollAttempts + ':', subtitleTracks.length, 'tracks');
 
-        var anyReady = false;
-        var allReady = true;
+        var readyCount = 0;
+        var textCount = 0;
         for (var i = 0; i < subtitleTracks.length; i++) {
-          if (subtitleTracks[i].vttUrl && subtitleTracks[i].vttReady) anyReady = true;
-          else if (subtitleTracks[i].vttUrl) allReady = false;
+          if (subtitleTracks[i].vttUrl) textCount++;
+          if (subtitleTracks[i].vttUrl && subtitleTracks[i].vttReady) readyCount++;
         }
 
-        if (anyReady) loadVttTracks();
-        updateCCButton();
+        console.log(TAG, 'Subs poll #' + subPollAttempts + ': ' + readyCount + '/' + textCount + ' VTT ready');
+
+        if (readyCount > 0) {
+          loadReadyVttTracks();
+        }
 
         subPollAttempts++;
-        if (!allReady && subPollAttempts < 15) {
+        if (readyCount < textCount && subPollAttempts < 20) {
           clearTimeout(subPollTimer);
           subPollTimer = setTimeout(pollSubtitleTracks, 3000);
         }
       })
       .catch(function () {
-        subtitleTracks = [];
-        updateCCButton();
         subPollAttempts++;
-        if (subPollAttempts < 15) {
+        if (subPollAttempts < 20) {
           clearTimeout(subPollTimer);
           subPollTimer = setTimeout(pollSubtitleTracks, 3000);
         }
       });
   }
 
-  function loadVttTracks() {
+  function loadReadyVttTracks() {
+    var pending = 0;
     for (var i = 0; i < subtitleTracks.length; i++) {
       var t = subtitleTracks[i];
       if (t.vttUrl && t.vttReady && !vttCache[i]) {
-        fetchAndCacheVtt(i, t);
+        pending++;
+        fetchAndCacheVtt(i, t, function () {
+          pending--;
+          if (pending <= 0) onVttLoadComplete();
+        });
       }
+    }
+    if (pending === 0 && !subsReady) onVttLoadComplete();
+  }
+
+  function onVttLoadComplete() {
+    var hasCachedSubs = false;
+    var defaultIdx = -1;
+    for (var i = 0; i < subtitleTracks.length; i++) {
+      if (vttCache[i] && vttCache[i].length > 0) {
+        hasCachedSubs = true;
+        if (subtitleTracks[i].isDefault && defaultIdx < 0) defaultIdx = i;
+      }
+    }
+
+    subsReady = hasCachedSubs;
+    updateCCButton();
+
+    if (hasCachedSubs && activeSubIndex < 0 && defaultIdx >= 0) {
+      console.log(TAG, 'Auto-enabling default subtitle:', subtitleTracks[defaultIdx].language);
+      toggleSubtitle(defaultIdx);
     }
   }
 
-  function fetchAndCacheVtt(idx, trackInfo) {
+  function fetchAndCacheVtt(idx, trackInfo, onDone) {
     var url = monitorrOrigin + trackInfo.vttUrl;
     fetch(url)
       .then(function (r) { return r.text(); })
       .then(function (vttText) {
         vttCache[idx] = parseVttCues(vttText);
         console.log(TAG, 'Cached VTT:', trackInfo.language, vttCache[idx].length, 'cues');
+        if (onDone) onDone();
       })
       .catch(function (e) {
         console.log(TAG, 'Failed to fetch VTT:', trackInfo.language, e.message);
+        if (onDone) onDone();
       });
   }
 
@@ -476,7 +508,7 @@
 
   function updateCCButton() {
     if (!btnCC) return;
-    if (subtitleTracks.length === 0) { btnCC.style.display = 'none'; return; }
+    if (!subsReady) { btnCC.style.display = 'none'; return; }
     btnCC.style.display = 'flex';
     if (activeSubIndex >= 0 && subtitleTracks[activeSubIndex]) {
       btnCC.classList.add('active');
