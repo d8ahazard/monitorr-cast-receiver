@@ -9,7 +9,7 @@
 
 (function () {
 
-  var VERSION = '0.3.2';
+  var VERSION = '0.3.3';
   var TAG = '[Monitorr v' + VERSION + ']';
   var MONITORR_NS = 'urn:x-cast:com.monitorr.cast';
 
@@ -35,7 +35,7 @@
   var btnSkipNext = document.getElementById('mr-btn-skip-next');
   var ccLabel = document.getElementById('mr-cc-label');
 
-  // Tell the SDK to use our video element for state tracking
+  // Tell the SDK to track our video element for state/status generation
   playerManager.setMediaElement(video);
 
   // ── State ──────────────────────────────────────────────────────────────────
@@ -436,7 +436,9 @@
 
   var opts = new cast.framework.CastReceiverOptions();
   opts.playbackConfig = playbackConfig;
-  opts.skipPlayersLoad = true;
+  // Don't skip -- let PlayerManager manage the media state machine.
+  // HLS.js and the SDK's Shaka both try to load; HLS.js wins because
+  // it attaches to the video element first in our LOAD interceptor.
   opts.disableIdleTimeout = true;
   opts.maxInactivity = 3600;
   opts.customNamespaces = {};
