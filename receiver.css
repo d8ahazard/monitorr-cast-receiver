@@ -1,5 +1,5 @@
 /* ══════════════════════════════════════════════════════════════════════════════
-   Monitorr Cast Receiver v0.4.1
+   Monitorr Cast Receiver v0.5.0
    ══════════════════════════════════════════════════════════════════════════════ */
 
 :root {
@@ -17,12 +17,7 @@
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-/* Suppress the Cast SDK / system media controls overlay */
-cast-media-player { display: none !important; visibility: hidden !important; }
-.cast-media-player { display: none !important; }
-[class*="castMediaPlayer"] { display: none !important; }
-[class*="media-control"] { display: none !important; }
-.overlay { display: none !important; } /* SDK's default overlay class */
+/* No media namespace = no system media UI to suppress */
 
 html, body {
   width: 100%;

@@ -1,17 +1,17 @@
 'use strict';
 
-// ─── Monitorr Cast Receiver v0.4.0 ──────────────────────────────────────────
+// ─── Monitorr Cast Receiver v0.5.0 ──────────────────────────────────────────
 //
-// Architecture: fully custom. Media namespace as custom namespace, hand-crafted
-// MEDIA_STATUS, HLS.js player, no PlayerManager UI. One UI, ours.
+// Fully custom receiver. NO media namespace. ALL communication through
+// urn:x-cast:com.monitorr.cast. The Cast platform sees this as a custom app,
+// not a media app. No system media UI, no duplicate controls. Just us.
 // ─────────────────────────────────────────────────────────────────────────────
 
 (function () {
 
-  var VERSION = '0.4.1';
+  var VERSION = '0.5.0';
   var TAG = '[Monitorr v' + VERSION + ']';
-  var MEDIA_NS = 'urn:x-cast:com.google.cast.media';
-  var MONITORR_NS = 'urn:x-cast:com.monitorr.cast';
+  var NS = 'urn:x-cast:com.monitorr.cast';
 
   var context = cast.framework.CastReceiverContext.getInstance();
 
@@ -37,7 +37,6 @@
   // ── State ──────────────────────────────────────────────────────────────────
 
   var hls = null;
-  var mediaSessionId = 0;
   var realDuration = 0;
   var seekOffset = 0;
   var currentUrl = null;
@@ -52,58 +51,56 @@
   var subtitleTracks = [];
   var activeSubIndex = -1;
 
-  // ── Media Namespace ────────────────────────────────────────────────────────
+  // ── Message Handler ────────────────────────────────────────────────────────
 
-  context.addCustomMessageListener(MEDIA_NS, function (event) {
+  context.addCustomMessageListener(NS, function (event) {
     var data = event.data;
     var sid = event.senderId;
-    var rid = data.requestId || 0;
 
     switch (data.type) {
-      case 'LOAD':        handleLoad(data, sid, rid); break;
-      case 'PLAY':        video.play().catch(function(){}); send(sid, buildStatus(rid)); break;
-      case 'PAUSE':       video.pause(); send(sid, buildStatus(rid)); break;
-      case 'STOP':        handleStop(sid, rid); break;
-      case 'SEEK':        handleSeek(data, sid, rid); break;
-      case 'GET_STATUS':  send(sid, buildStatus(rid)); break;
+      case 'LOAD':        handleLoad(data, sid); break;
+      case 'PLAY':        video.play().catch(function(){}); reply(sid, 'STATUS'); break;
+      case 'PAUSE':       video.pause(); reply(sid, 'STATUS'); break;
+      case 'STOP':        handleStop(sid); break;
+      case 'SEEK':        handleSeek(data, sid); break;
+      case 'GET_STATUS':  reply(sid, 'STATUS'); break;
       case 'SET_VOLUME':
-        if (data.volume) {
-          if (data.volume.level !== undefined) video.volume = data.volume.level;
-          if (data.volume.muted !== undefined) video.muted = data.volume.muted;
-        }
-        send(sid, buildStatus(rid));
+        if (data.level !== undefined) video.volume = data.level;
+        if (data.muted !== undefined) video.muted = data.muted;
+        reply(sid, 'STATUS');
         break;
-      default: send(sid, buildStatus(rid));
+      case 'PING':
+        send(sid, { type: 'PONG', version: VERSION });
+        break;
+      default:
+        reply(sid, 'STATUS');
     }
   });
 
   // ── LOAD ───────────────────────────────────────────────────────────────────
 
-  function handleLoad(data, sid, rid) {
-    var media = data.media;
-    if (!media || !media.contentId) return;
-    var url = media.contentId;
+  function handleLoad(data, sid) {
+    var url = data.url || (data.media && data.media.contentId);
+    if (!url) return;
     console.log(TAG, 'LOAD:', url);
 
     destroyHls(); stopBroadcaster();
-    mediaSessionId++;
     currentUrl = url;
     seekOffset = 0;
     serverSeeking = false;
     subtitleTracks = [];
     activeSubIndex = -1;
 
-    realDuration = (media.duration > 0) ? media.duration : 0;
-    lastMetadata = media.metadata || null;
-    customData = (media.customData && typeof media.customData === 'object') ? media.customData : null;
+    realDuration = data.duration || 0;
+    lastMetadata = data.metadata || null;
+    customData = data.customData || null;
 
-    isHlsContent = url.indexOf('.m3u8') !== -1 || (media.contentType && media.contentType.indexOf('mpegURL') !== -1);
+    isHlsContent = url.indexOf('.m3u8') !== -1;
     var match = url.match(/\/hls\/([a-f0-9]+)\//);
     hlsSessionId = match ? match[1] : null;
     try { monitorrOrigin = new URL(url).origin; } catch (e) { monitorrOrigin = null; }
 
-    var startTime = data.currentTime || 0;
-    if (startTime > 0) seekOffset = startTime;
+    if (data.startTime > 0) seekOffset = data.startTime;
 
     showPlayer(); updateMetadata(); updateSkipButtons(); showSpinner();
 
@@ -113,7 +110,7 @@
         if (realDuration <= 0) fetchDuration();
         if (hlsSessionId && monitorrOrigin) fetchSubtitleTracks();
         startBroadcaster();
-        send(sid, buildStatus(rid));
+        reply(sid, 'STATUS');
         flashOverlay();
       });
     } else {
@@ -121,20 +118,20 @@
       video.addEventListener('canplay', function f() {
         video.removeEventListener('canplay', f);
         video.play().catch(function(){});
-        hideSpinner(); startBroadcaster(); send(sid, buildStatus(rid));
+        hideSpinner(); startBroadcaster(); reply(sid, 'STATUS');
       });
     }
   }
 
   // ── SEEK ───────────────────────────────────────────────────────────────────
 
-  function handleSeek(data, sid, rid) {
-    var t = data.currentTime;
+  function handleSeek(data, sid) {
+    var t = data.time;
     if (t === undefined) return;
 
     if (!isHlsContent || !hlsSessionId || !monitorrOrigin) {
       video.currentTime = t;
-      send(sid, buildStatus(rid));
+      reply(sid, 'STATUS');
       return;
     }
 
@@ -149,7 +146,6 @@
         seekOffset = res.offsetSeconds || t;
         var reloadUrl = currentUrl.split('?')[0] + '?seek=' + Date.now().toString(36);
         currentUrl = reloadUrl;
-
         destroyHls();
         var h = new Hls({ enableWorker: false, maxBufferLength: 30, maxMaxBufferLength: 120, startLevel: -1 });
         hls = h;
@@ -157,10 +153,7 @@
         h.once(Hls.Events.MANIFEST_PARSED, function () { h.attachMedia(video); });
         h.once(Hls.Events.FRAG_BUFFERED, function () {
           video.play().catch(function(){});
-          serverSeeking = false;
-          hideSpinner();
-          broadcast(0);
-          flashOverlay();
+          serverSeeking = false; hideSpinner(); broadcast(); flashOverlay();
         });
         h.on(Hls.Events.ERROR, function (_, e) {
           if (e.fatal) { if (e.type === Hls.ErrorTypes.NETWORK_ERROR) h.startLoad(); else if (e.type === Hls.ErrorTypes.MEDIA_ERROR) h.recoverMediaError(); }
@@ -172,11 +165,9 @@
 
   // ── STOP ───────────────────────────────────────────────────────────────────
 
-  function handleStop(sid, rid) {
+  function handleStop(sid) {
     destroyHls(); stopBroadcaster();
-    var s = buildStatus(rid, 'IDLE');
-    s.status[0].idleReason = 'CANCELLED';
-    send(sid, s);
+    send(sid, { type: 'STATUS', state: 'IDLE' });
     showIdle();
   }
 
@@ -198,39 +189,36 @@
 
   function destroyHls() { if (hls) { hls.detachMedia(); hls.destroy(); hls = null; } }
 
-  // ── MEDIA_STATUS ───────────────────────────────────────────────────────────
+  // ── Status ─────────────────────────────────────────────────────────────────
 
-  function buildStatus(rid, stateOverride) {
-    var state = stateOverride || getState();
-    var s = { type: 'MEDIA_STATUS', requestId: rid || 0, status: [{
-      mediaSessionId: mediaSessionId, playbackRate: 1, playerState: state,
+  function buildStatus() {
+    return {
+      type: 'STATUS',
+      state: getState(),
       currentTime: seekOffset + (video.currentTime || 0),
-      supportedMediaCommands: 0x3FFFF,
-      volume: { level: video.volume, muted: video.muted },
-      media: currentUrl ? {
-        contentId: currentUrl, streamType: 'BUFFERED',
-        contentType: isHlsContent ? 'application/x-mpegURL' : 'video/mp4',
-        duration: realDuration > 0 ? realDuration : (isFinite(video.duration) ? video.duration : 0),
-        metadata: lastMetadata
-      } : null
-    }]};
-    return s;
+      duration: realDuration > 0 ? realDuration : (isFinite(video.duration) ? video.duration : 0),
+      volume: video.volume,
+      muted: video.muted,
+      url: currentUrl,
+      hlsSessionId: hlsSessionId,
+      metadata: lastMetadata,
+      subtitles: { tracks: subtitleTracks, activeIndex: activeSubIndex },
+      version: VERSION
+    };
   }
 
   function getState() {
     if (!currentUrl) return 'IDLE';
-    if (serverSeeking || video.seeking || video.readyState < 3) return 'BUFFERING';
+    if (serverSeeking) return 'BUFFERING';
     if (video.paused || video.ended) return 'PAUSED';
     return 'PLAYING';
   }
 
-  function send(sid, msg) { try { context.sendCustomMessage(MEDIA_NS, sid, msg); } catch(e){} }
-  function broadcast(rid) {
-    var s = buildStatus(rid || 0);
-    context.getSenders().forEach(function(sender) { send(sender.id, s); });
-  }
+  function reply(sid, type) { send(sid, buildStatus()); }
+  function send(sid, msg) { try { context.sendCustomMessage(NS, sid, msg); } catch(e){} }
+  function broadcast() { context.getSenders().forEach(function(s) { send(s.id, buildStatus()); }); }
 
-  function startBroadcaster() { stopBroadcaster(); statusTimer = setInterval(function () { if (!serverSeeking) broadcast(0); }, 2000); }
+  function startBroadcaster() { stopBroadcaster(); statusTimer = setInterval(function () { if (!serverSeeking) broadcast(); }, 2000); }
   function stopBroadcaster() { if (statusTimer) { clearInterval(statusTimer); statusTimer = null; } }
 
   // ── Duration ───────────────────────────────────────────────────────────────
@@ -243,7 +231,7 @@
         if (info.durationSeconds > 0) {
           realDuration = info.durationSeconds;
           if (info.startOffsetSeconds > 0 && seekOffset === 0) seekOffset = info.startOffsetSeconds;
-          broadcast(0);
+          broadcast();
         } else setTimeout(fetchDuration, 3000);
       })
       .catch(function () { setTimeout(fetchDuration, 5000); });
@@ -291,7 +279,7 @@
         h.loadSource(reloadUrl);
         h.once(Hls.Events.MANIFEST_PARSED, function () { h.attachMedia(video); });
         h.once(Hls.Events.FRAG_BUFFERED, function () {
-          video.play().catch(function(){}); serverSeeking = false; hideSpinner(); broadcast(0); flashOverlay();
+          video.play().catch(function(){}); serverSeeking = false; hideSpinner(); broadcast(); flashOverlay();
         });
         h.on(Hls.Events.ERROR, function (_, e) { if (e.fatal && e.type === Hls.ErrorTypes.NETWORK_ERROR) h.startLoad(); });
         setTimeout(function () { if (serverSeeking) { serverSeeking = false; hideSpinner(); } }, 20000);
@@ -308,8 +296,6 @@
       if (ccLabel) ccLabel.textContent = subtitleTracks[activeSubIndex].language.toUpperCase();
     } else { btnCC.classList.remove('active'); if (ccLabel) ccLabel.textContent = ''; }
   }
-
-  // ── Skip ───────────────────────────────────────────────────────────────────
 
   function updateSkipButtons() {
     var hasPrev = customData && typeof customData.prevEpisodeFileId === 'string' && customData.prevEpisodeFileId.length > 0;
@@ -354,19 +340,11 @@
   function hideSpinner() { if (spinner) spinner.style.display = 'none'; }
   function fmt(s) { if (!s || !isFinite(s)) return '0:00'; s = Math.max(0, Math.floor(s)); var h = Math.floor(s/3600), m = Math.floor(s%3600/60), ss = s%60; return h > 0 ? h+':'+(m<10?'0':'')+m+':'+(ss<10?'0':'')+ss : m+':'+(ss<10?'0':'')+ss; }
 
-  // ── Monitorr Namespace ─────────────────────────────────────────────────────
-
-  context.addCustomMessageListener(MONITORR_NS, function (e) {
-    if (e.data.type === 'PING') context.sendCustomMessage(MONITORR_NS, e.senderId, {
-      type: 'PONG', version: VERSION, currentTime: seekOffset + (video.currentTime||0),
-      duration: realDuration, hlsSessionId: hlsSessionId, playerState: getState()
-    });
-  });
-
   // ── Sender events ──────────────────────────────────────────────────────────
 
   context.addEventListener(cast.framework.system.EventType.SENDER_CONNECTED, function (e) {
-    if (currentUrl) send(e.senderId, buildStatus(0));
+    console.log(TAG, 'Sender connected:', e.senderId);
+    if (currentUrl) send(e.senderId, buildStatus());
   });
   context.addEventListener(cast.framework.system.EventType.SENDER_DISCONNECTED, function () {
     if (context.getSenders().length === 0) { destroyHls(); stopBroadcaster(); context.stop(); }
@@ -379,27 +357,11 @@
   opts.disableIdleTimeout = true;
   opts.maxInactivity = 3600;
   opts.customNamespaces = {};
-  opts.customNamespaces[MEDIA_NS] = cast.framework.system.MessageType.JSON;
-  opts.customNamespaces[MONITORR_NS] = cast.framework.system.MessageType.JSON;
+  opts.customNamespaces[NS] = cast.framework.system.MessageType.JSON;
+  // NO media namespace. This is a custom app, not a media app.
 
   context.start(opts);
   console.log(TAG, 'Receiver started');
   showIdle();
-
-  // Suppress Android system media controls on CCwGTV
-  if ('mediaSession' in navigator) {
-    navigator.mediaSession.metadata = null;
-    ['play','pause','seekbackward','seekforward','seekto','previoustrack','nexttrack','stop'].forEach(function (a) {
-      try { navigator.mediaSession.setActionHandler(a, function () {}); } catch (e) {}
-    });
-  }
-
-  // Hide any SDK-injected elements
-  setTimeout(function () {
-    document.querySelectorAll('cast-media-player, .overlay:not(#mr-overlay)').forEach(function (el) {
-      el.style.display = 'none';
-      el.style.visibility = 'hidden';
-    });
-  }, 500);
 
 })();
