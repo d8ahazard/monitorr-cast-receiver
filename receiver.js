@@ -1,6 +1,6 @@
 'use strict';
 
-// ─── Monitorr Cast Receiver v2.2.1 ──────────────────────────────────────────
+// ─── Monitorr Cast Receiver v2.2.2 ──────────────────────────────────────────
 //
 // Uses PlayerManager interceptors (not custom namespace for media).
 // The SDK owns the media state machine and UI. We own the player (HLS.js)
@@ -9,7 +9,7 @@
 
 (function () {
 
-  var VERSION = '2.2.1';
+  var VERSION = '2.2.2';
   var TAG = '[Monitorr v' + VERSION + ']';
   var MONITORR_NS = 'urn:x-cast:com.monitorr.cast';
 
@@ -850,11 +850,7 @@
 
     if (key === 'ArrowLeft') {
       if (activeRow === 'seek') {
-        if (e.repeat) {
-          nudgeSeekPreview(-1);
-        } else {
-          tapSeek(-5);
-        }
+        nudgeSeekPreview(-1);
       } else {
         setButtonFocus(focusIndex <= 0 ? getVisibleButtons().length - 1 : focusIndex - 1);
       }
@@ -863,11 +859,7 @@
 
     if (key === 'ArrowRight') {
       if (activeRow === 'seek') {
-        if (e.repeat) {
-          nudgeSeekPreview(1);
-        } else {
-          tapSeek(10);
-        }
+        nudgeSeekPreview(1);
       } else {
         setButtonFocus(focusIndex + 1);
       }
@@ -939,11 +931,22 @@
     console.log(TAG, 'Sender connected:', e.senderId);
   });
 
+  function killServerSession() {
+    if (hlsSessionId && monitorrOrigin) {
+      var url = monitorrOrigin + '/api/cast/hls/' + hlsSessionId + '/kill';
+      console.log(TAG, 'Killing server session:', hlsSessionId);
+      try { navigator.sendBeacon(url); } catch (e) {
+        fetch(url, { method: 'POST', keepalive: true }).catch(function () {});
+      }
+    }
+  }
+
   context.addEventListener(cast.framework.system.EventType.SENDER_DISCONNECTED, function (e) {
     console.log(TAG, 'Sender disconnected:', e.senderId);
     if (context.getSenders().length === 0) {
       console.log(TAG, 'No senders remaining, shutting down');
       video.pause();
+      killServerSession();
       destroyHls();
       showIdle();
       context.stop();
@@ -969,6 +972,7 @@
 
   window.addEventListener('beforeunload', function () {
     video.pause();
+    killServerSession();
     destroyHls();
   });
 
