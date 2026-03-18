@@ -1,6 +1,6 @@
 'use strict';
 
-// ─── Monitorr Cast Receiver v2.1.7 ──────────────────────────────────────────
+// ─── Monitorr Cast Receiver v2.1.8 ──────────────────────────────────────────
 //
 // Uses PlayerManager interceptors (not custom namespace for media).
 // The SDK owns the media state machine and UI. We own the player (HLS.js)
@@ -9,7 +9,7 @@
 
 (function () {
 
-  var VERSION = '2.1.7';
+  var VERSION = '2.1.8';
   var TAG = '[Monitorr v' + VERSION + ']';
   var MONITORR_NS = 'urn:x-cast:com.monitorr.cast';
 
@@ -566,6 +566,22 @@
   var seekPreviewTime = null;
   var seekHoldCount = 0;
   var seekLockedTime = null;
+  var seekKeepaliveTimer = null;
+
+  function startSeekKeepalive() {
+    stopSeekKeepalive();
+    seekKeepaliveTimer = setInterval(function () {
+      try { playerManager.broadcastStatus(); } catch (e) {}
+    }, 1000);
+    try { playerManager.broadcastStatus(); } catch (e) {}
+  }
+
+  function stopSeekKeepalive() {
+    if (seekKeepaliveTimer) {
+      clearInterval(seekKeepaliveTimer);
+      seekKeepaliveTimer = null;
+    }
+  }
 
   function getSeekStep() {
     if (seekHoldCount < 3) return 5;
@@ -614,6 +630,7 @@
       if (serverSeeking) return;
       serverSeeking = true;
       seekLockedTime = target;
+      startSeekKeepalive();
       video.pause();
       showSpinner();
       var seekUrl = monitorrOrigin + '/api/cast/hls/' + hlsSessionId + '/seek?t=' + target.toFixed(1);
@@ -633,6 +650,7 @@
             video.play().catch(function () {});
             serverSeeking = false;
             seekLockedTime = null;
+            stopSeekKeepalive();
             hideSpinner();
             playerManager.broadcastStatus();
             flashOverlay();
@@ -643,11 +661,12 @@
               else if (e.type === Hls.ErrorTypes.MEDIA_ERROR) newHls.recoverMediaError();
             }
           });
-          setTimeout(function () { if (serverSeeking) { serverSeeking = false; seekLockedTime = null; video.play().catch(function () {}); hideSpinner(); } }, 12000);
+          setTimeout(function () { if (serverSeeking) { serverSeeking = false; seekLockedTime = null; stopSeekKeepalive(); video.play().catch(function () {}); hideSpinner(); } }, 12000);
         })
         .catch(function () {
           serverSeeking = false;
           seekLockedTime = null;
+          stopSeekKeepalive();
           hideSpinner();
           video.play().catch(function () {});
         });
