@@ -1,6 +1,6 @@
 'use strict';
 
-// ─── Monitorr Cast Receiver v2.2.2 ──────────────────────────────────────────
+// ─── Monitorr Cast Receiver v2.2.3 ──────────────────────────────────────────
 //
 // Uses PlayerManager interceptors (not custom namespace for media).
 // The SDK owns the media state machine and UI. We own the player (HLS.js)
@@ -9,7 +9,7 @@
 
 (function () {
 
-  var VERSION = '2.2.2';
+  var VERSION = '2.2.3';
   var TAG = '[Monitorr v' + VERSION + ']';
   var MONITORR_NS = 'urn:x-cast:com.monitorr.cast';
 

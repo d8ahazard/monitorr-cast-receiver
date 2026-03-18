@@ -1,5 +1,5 @@
 /* ══════════════════════════════════════════════════════════════════════════════
-   Monitorr Cast Receiver v2.2.2
+   Monitorr Cast Receiver v2.2.3
    ══════════════════════════════════════════════════════════════════════════════ */
 
 :root {
@@ -120,7 +120,7 @@ html, body {
 /* ── Controls Row ────────────────────────────────────────────────────────── */
 
 .mr-controls-row {
-  display: flex; flex-wrap: wrap; align-items: flex-end; gap: 16px;
+  display: flex; align-items: center; gap: 16px;
 }
 
 .mr-poster {
@@ -149,8 +149,7 @@ html, body {
 
 .mr-buttons {
   display: flex; align-items: center; justify-content: center; gap: 12px;
-  width: 100%; order: -1;
-  margin-bottom: 4px;
+  flex: 0 0 auto;
 }
 
 .mr-btn {
@@ -210,7 +209,7 @@ html, body {
 
 .mr-brand {
   display: flex; align-items: baseline; gap: 5px;
-  flex-shrink: 0; opacity: 0.25; margin-left: 8px;
+  flex-shrink: 0; opacity: 0.25; margin-left: auto;
 }
 .mr-brand-name { font-size: 13px; font-weight: 600; color: var(--mr-text); }
 .mr-brand-ver { font-size: 9px; font-weight: 500; color: var(--mr-text-faint); }
