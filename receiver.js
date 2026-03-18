@@ -1,6 +1,6 @@
 'use strict';
 
-// ─── Monitorr Cast Receiver v2.2.0 ──────────────────────────────────────────
+// ─── Monitorr Cast Receiver v2.2.1 ──────────────────────────────────────────
 //
 // Uses PlayerManager interceptors (not custom namespace for media).
 // The SDK owns the media state machine and UI. We own the player (HLS.js)
@@ -9,7 +9,7 @@
 
 (function () {
 
-  var VERSION = '2.2.0';
+  var VERSION = '2.2.1';
   var TAG = '[Monitorr v' + VERSION + ']';
   var MONITORR_NS = 'urn:x-cast:com.monitorr.cast';
 
@@ -287,6 +287,9 @@
 
   function destroyHls() {
     if (hls) { hls.detachMedia(); hls.destroy(); hls = null; }
+    video.pause();
+    video.removeAttribute('src');
+    video.load();
   }
 
   // ── Duration ───────────────────────────────────────────────────────────────
@@ -905,9 +908,6 @@
     var key = normalizeRemoteKey(e);
     if (!isOwnedRemoteKey(key)) return;
     consumeKeyEvent(e);
-    if (key === 'ArrowLeft' || key === 'ArrowRight') {
-      seekHoldCount = 0;
-    }
   }, true);
   function showPlayer() { if (idleScreen) idleScreen.style.display = 'none'; if (playerScreen) playerScreen.style.display = 'block'; }
   function showIdle() { if (playerScreen) playerScreen.style.display = 'none'; if (idleScreen) idleScreen.style.display = 'flex'; }
@@ -941,7 +941,13 @@
 
   context.addEventListener(cast.framework.system.EventType.SENDER_DISCONNECTED, function (e) {
     console.log(TAG, 'Sender disconnected:', e.senderId);
-    if (context.getSenders().length === 0) { destroyHls(); context.stop(); }
+    if (context.getSenders().length === 0) {
+      console.log(TAG, 'No senders remaining, shutting down');
+      video.pause();
+      destroyHls();
+      showIdle();
+      context.stop();
+    }
   });
 
   // ── Start ──────────────────────────────────────────────────────────────────
@@ -960,6 +966,11 @@
   opts.customNamespaces[MONITORR_NS] = cast.framework.system.MessageType.JSON;
   // NOTE: urn:x-cast:com.google.cast.media is NOT registered as custom --
   // the SDK's PlayerManager handles it natively via interceptors.
+
+  window.addEventListener('beforeunload', function () {
+    video.pause();
+    destroyHls();
+  });
 
   context.start(opts);
   console.log(TAG, 'Receiver started');
