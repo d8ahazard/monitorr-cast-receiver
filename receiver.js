@@ -1151,7 +1151,7 @@
   function reportProgress() {
     if (!monitorrOrigin || !hlsSessionId) return;
     if (video.paused && !video.ended) return;
-    var pos = Math.floor(getCurrentTime() * 1000);
+    var pos = Math.floor(getCurrentPlaybackTime() * 1000);
     var dur = realDuration > 0 ? Math.floor(realDuration * 1000) : 0;
     if (pos <= 0 || dur <= 0) return;
     var url = monitorrOrigin + '/api/cast/hls/' + hlsSessionId + '/progress';
@@ -1161,7 +1161,7 @@
 
   function reportProgressFinal() {
     if (!monitorrOrigin || !hlsSessionId) return;
-    var pos = Math.floor(getCurrentTime() * 1000);
+    var pos = Math.floor(getCurrentPlaybackTime() * 1000);
     var dur = realDuration > 0 ? Math.floor(realDuration * 1000) : 0;
     if (pos <= 0 || dur <= 0) return;
     var url = monitorrOrigin + '/api/cast/hls/' + hlsSessionId + '/progress';
