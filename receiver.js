@@ -1,6 +1,6 @@
 'use strict';
 
-// ─── Monitorr Cast Receiver v2.1.3 ──────────────────────────────────────────
+// ─── Monitorr Cast Receiver v2.1.4 ──────────────────────────────────────────
 //
 // Uses PlayerManager interceptors (not custom namespace for media).
 // The SDK owns the media state machine and UI. We own the player (HLS.js)
@@ -9,7 +9,7 @@
 
 (function () {
 
-  var VERSION = '2.1.3';
+  var VERSION = '2.1.4';
   var TAG = '[Monitorr v' + VERSION + ']';
   var MONITORR_NS = 'urn:x-cast:com.monitorr.cast';
 
@@ -34,6 +34,12 @@
   var btnSkipPrev = document.getElementById('mr-btn-skip-prev');
   var btnSkipNext = document.getElementById('mr-btn-skip-next');
   var ccLabel = document.getElementById('mr-cc-label');
+  var btnPlayPause = document.getElementById('mr-btn-playpause');
+  var iconPlay = document.getElementById('mr-icon-play');
+  var iconPause = document.getElementById('mr-icon-pause');
+  var btnRw = document.getElementById('mr-btn-rw');
+  var btnFf = document.getElementById('mr-btn-ff');
+  var seekRow = document.querySelector('.mr-seek-row');
 
   // Tell the SDK to track our video element for state/status generation
   playerManager.setMediaElement(video);
@@ -361,6 +367,24 @@
 
   if (btnCC) btnCC.addEventListener('click', function () { cycleSubtitle(); });
 
+  if (btnPlayPause) btnPlayPause.addEventListener('click', function () {
+    if (video.paused) video.play().catch(function () {});
+    else video.pause();
+    playerManager.broadcastStatus();
+  });
+
+  if (btnRw) btnRw.addEventListener('click', function () { seekByDelta(-10); });
+  if (btnFf) btnFf.addEventListener('click', function () { seekByDelta(10); });
+
+  function updatePlayPauseIcon() {
+    if (!iconPlay || !iconPause) return;
+    iconPlay.style.display = video.paused ? '' : 'none';
+    iconPause.style.display = video.paused ? 'none' : '';
+  }
+  video.addEventListener('play', updatePlayPauseIcon);
+  video.addEventListener('pause', updatePlayPauseIcon);
+  video.addEventListener('playing', updatePlayPauseIcon);
+
   video.addEventListener('timeupdate', function () {
     if (serverSeeking) return;
     var total = realDuration > 0 ? realDuration : (isFinite(video.duration) ? video.duration : 0);
@@ -396,52 +420,69 @@
 
 
 
-  // Own remote keys so CAF never pops the system overlay controls.
-  var focusButtons = [btnSkipPrev, btnCC, btnSkipNext];
-  var focusIndex = -1;
+  // ── D-pad navigation: two rows (seek / buttons) ────────────────────────────
 
-  function getVisibleOverlayButtons() {
+  var allButtons = [btnSkipPrev, btnRw, btnPlayPause, btnFf, btnCC, btnSkipNext];
+  var focusIndex = -1;
+  var activeRow = 'buttons'; // 'buttons' or 'seek'
+
+  function getVisibleButtons() {
     var out = [];
-    for (var i = 0; i < focusButtons.length; i++) {
-      var b = focusButtons[i];
+    for (var i = 0; i < allButtons.length; i++) {
+      var b = allButtons[i];
       if (!b) continue;
-      if (b.style.display === 'none') continue;
+      if (b.style.display === 'none' || b.offsetParent === null) continue;
       out.push(b);
     }
     return out;
   }
 
-  function clearOverlayFocus() {
-    for (var i = 0; i < focusButtons.length; i++) {
-      if (focusButtons[i]) focusButtons[i].classList.remove('mr-focused');
+  function clearAllFocus() {
+    for (var i = 0; i < allButtons.length; i++) {
+      if (allButtons[i]) allButtons[i].classList.remove('mr-focused');
     }
+    if (seekRow) seekRow.classList.remove('mr-focused');
     focusIndex = -1;
   }
 
-  function setOverlayFocus(idx) {
-    var buttons = getVisibleOverlayButtons();
-    if (buttons.length === 0) { clearOverlayFocus(); return; }
-    clearOverlayFocus();
-    focusIndex = ((idx % buttons.length) + buttons.length) % buttons.length;
-    buttons[focusIndex].classList.add('mr-focused');
-    buttons[focusIndex].focus();
+  function setButtonFocus(idx) {
+    var btns = getVisibleButtons();
+    if (btns.length === 0) return;
+    clearAllFocus();
+    activeRow = 'buttons';
+    focusIndex = ((idx % btns.length) + btns.length) % btns.length;
+    btns[focusIndex].classList.add('mr-focused');
+    btns[focusIndex].focus();
+  }
+
+  function setSeekRowFocus() {
+    clearAllFocus();
+    activeRow = 'seek';
+    if (seekRow) seekRow.classList.add('mr-focused');
   }
 
   function showOverlayAndFocus() {
     flashOverlay();
-    var buttons = getVisibleOverlayButtons();
-    if (buttons.length > 0) {
-      if (focusIndex < 0 || focusIndex >= buttons.length) setOverlayFocus(Math.floor(buttons.length / 2));
-      else setOverlayFocus(focusIndex);
+    var btns = getVisibleButtons();
+    if (btns.length > 0) {
+      var ppIdx = -1;
+      for (var i = 0; i < btns.length; i++) {
+        if (btns[i] === btnPlayPause) { ppIdx = i; break; }
+      }
+      setButtonFocus(ppIdx >= 0 ? ppIdx : Math.floor(btns.length / 2));
     }
   }
 
   function hideOverlayNow() {
     if (overlay) overlay.classList.remove('visible');
     clearTimeout(overlayTimer);
-    clearOverlayFocus();
+    clearAllFocus();
     var activeEl = document.activeElement;
     if (activeEl && activeEl !== document.body && typeof activeEl.blur === 'function') activeEl.blur();
+  }
+
+  function isOverlayVisible() {
+    return overlay && overlay.classList.contains('visible');
   }
 
   function normalizeRemoteKey(e) {
@@ -539,35 +580,59 @@
     if (!isOwnedRemoteKey(key)) return;
     consumeKeyEvent(e);
 
-    if (key === 'ArrowUp' || key === 'ArrowDown') {
+    if (!isOverlayVisible()) {
+      if (key === 'Backspace' || key === 'Escape') return;
       showOverlayAndFocus();
       return;
     }
 
+    flashOverlay();
+
+    if (key === 'ArrowUp') {
+      if (activeRow === 'buttons') {
+        setSeekRowFocus();
+      }
+      return;
+    }
+
+    if (key === 'ArrowDown') {
+      if (activeRow === 'seek') {
+        var btns = getVisibleButtons();
+        var ppIdx = -1;
+        for (var i = 0; i < btns.length; i++) { if (btns[i] === btnPlayPause) { ppIdx = i; break; } }
+        setButtonFocus(ppIdx >= 0 ? ppIdx : Math.floor(btns.length / 2));
+      } else {
+        hideOverlayNow();
+      }
+      return;
+    }
+
     if (key === 'ArrowLeft') {
-      if (overlay && overlay.classList.contains('visible')) setOverlayFocus(focusIndex < 0 ? 0 : focusIndex - 1);
-      else seekByDelta(-10);
+      if (activeRow === 'seek') {
+        seekByDelta(-10);
+      } else {
+        setButtonFocus(focusIndex <= 0 ? getVisibleButtons().length - 1 : focusIndex - 1);
+      }
       return;
     }
 
     if (key === 'ArrowRight') {
-      if (overlay && overlay.classList.contains('visible')) setOverlayFocus(focusIndex < 0 ? 0 : focusIndex + 1);
-      else seekByDelta(10);
+      if (activeRow === 'seek') {
+        seekByDelta(10);
+      } else {
+        setButtonFocus(focusIndex + 1);
+      }
       return;
     }
 
     if (key === 'Enter') {
-      if (!(overlay && overlay.classList.contains('visible'))) {
-        showOverlayAndFocus();
-        return;
-      }
-      var buttons = getVisibleOverlayButtons();
-      if (buttons.length > 0) {
-        if (focusIndex < 0 || focusIndex >= buttons.length) {
-          setOverlayFocus(Math.floor(buttons.length / 2));
-          buttons = getVisibleOverlayButtons();
-        }
-        if (focusIndex >= 0 && focusIndex < buttons.length) buttons[focusIndex].click();
+      if (activeRow === 'seek') {
+        if (video.paused) video.play().catch(function () {});
+        else video.pause();
+        playerManager.broadcastStatus();
+      } else {
+        var btns2 = getVisibleButtons();
+        if (focusIndex >= 0 && focusIndex < btns2.length) btns2[focusIndex].click();
       }
       return;
     }
@@ -581,7 +646,6 @@
       if (video.paused) video.play().catch(function () {});
       else video.pause();
       playerManager.broadcastStatus();
-      flashOverlay();
       return;
     }
   }, true);

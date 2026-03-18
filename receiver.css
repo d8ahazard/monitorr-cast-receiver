@@ -1,5 +1,5 @@
 /* ══════════════════════════════════════════════════════════════════════════════
-   Monitorr Cast Receiver v2.1.3
+   Monitorr Cast Receiver v2.1.4
    ══════════════════════════════════════════════════════════════════════════════ */
 
 :root {
@@ -161,12 +161,26 @@ html, body {
   background: rgba(3, 169, 244, 0.12);
 }
 
+.mr-btn-play {
+  font-size: 28px;
+  padding: 8px 16px;
+}
+
+.mr-btn-nav { font-size: 18px; }
+
 .mr-btn.mr-focused {
   background: rgba(3, 169, 244, 0.18);
   color: var(--mr-text);
   border-color: rgba(3, 169, 244, 0.55);
   outline: 2px solid rgba(3, 169, 244, 0.85);
   outline-offset: 1px;
+}
+
+.mr-seek-row.mr-focused .mr-seek-track {
+  height: 8px;
+  outline: 2px solid rgba(3, 169, 244, 0.85);
+  outline-offset: 3px;
+  border-radius: 4px;
 }
 
 .mr-cc-label {
