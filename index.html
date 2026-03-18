@@ -2,91 +2,14 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Monitorr</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="receiver.css">
   <script src="//www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/hls.js@1"></script>
 </head>
 <body>
-
-  <!-- ── Player ─────────────────────────────────────────── -->
-  <div id="mr-player" style="display:none">
-    <video id="mr-video"></video>
-
-    <!-- Loading spinner -->
-    <div id="mr-spinner" style="display:none">
-      <div class="mr-spinner-ring"></div>
-    </div>
-
-    <!-- Bottom overlay -->
-    <div id="mr-overlay">
-      <div class="mr-gradient"></div>
-      <div class="mr-bottom">
-
-        <!-- Seek bar -->
-        <div class="mr-seek-row">
-          <span id="mr-time-left" class="mr-time">0:00</span>
-          <div class="mr-seek-track">
-            <div id="mr-seek-buffered" class="mr-seek-buffered"></div>
-            <div id="mr-seek-played" class="mr-seek-played"></div>
-          </div>
-          <span id="mr-time-right" class="mr-time">--:--</span>
-        </div>
-
-        <!-- Controls row -->
-        <div class="mr-controls-row">
-          <!-- Meta (left) -->
-          <img id="mr-poster" class="mr-poster" src="" alt="" style="display:none">
-          <div class="mr-meta">
-            <div id="mr-title" class="mr-title"></div>
-            <div id="mr-subtitle" class="mr-subtitle"></div>
-          </div>
-
-          <!-- Buttons (center-right) -->
-          <div id="mr-controls" class="mr-controls">
-            <button class="mr-btn" data-action="skip-prev" style="display:none" id="mr-btn-skip-prev">
-              <span class="bi bi-skip-start-fill"></span>
-            </button>
-            <button class="mr-btn" data-action="seek-back">
-              <span class="bi bi-rewind-fill"></span>
-            </button>
-            <button class="mr-btn mr-btn-play" data-action="play-pause" id="mr-btn-play">
-              <span class="bi bi-play-fill" id="mr-play-icon"></span>
-            </button>
-            <button class="mr-btn" data-action="seek-forward">
-              <span class="bi bi-fast-forward-fill"></span>
-            </button>
-            <button class="mr-btn" data-action="skip-next" style="display:none" id="mr-btn-skip-next">
-              <span class="bi bi-skip-end-fill"></span>
-            </button>
-            <button class="mr-btn" data-action="cc" style="display:none" id="mr-btn-cc">
-              <span class="bi bi-badge-cc-fill"></span>
-              <span id="mr-cc-label" class="mr-cc-label"></span>
-            </button>
-          </div>
-
-          <!-- Brand (right) -->
-          <div class="mr-brand">
-            <span class="mr-brand-name">Monitorr</span>
-            <span class="mr-brand-ver">v0.5.2</span>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- ── Idle Screen ────────────────────────────────────── -->
-  <div id="mr-idle">
-    <div class="idle-brand">Monitorr</div>
-    <div class="idle-status">Ready to cast</div>
-    <div class="idle-version">v0.5.2</div>
-  </div>
-
+  <cast-media-player></cast-media-player>
   <script src="receiver.js"></script>
 </body>
 </html>
