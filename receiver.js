@@ -1,6 +1,6 @@
 'use strict';
 
-// ─── Monitorr Cast Receiver v2.3.2 ──────────────────────────────────────────
+// ─── Monitorr Cast Receiver v2.4.0 ──────────────────────────────────────────
 //
 // Uses PlayerManager interceptors (not custom namespace for media).
 // The SDK owns the media state machine and UI. We own the player (HLS.js)
@@ -9,7 +9,7 @@
 
 (function () {
 
-  var VERSION = '2.3.2';
+  var VERSION = '2.4.0';
   var TAG = '[Monitorr v' + VERSION + ']';
   var MONITORR_NS = 'urn:x-cast:com.monitorr.cast';
 
@@ -311,91 +311,103 @@
       .catch(function () { setTimeout(fetchDuration, 5000); });
   }
 
-  // ── Subtitles (sidecar WebVTT) ────────────────────────────────────────────
+  // ── Subtitles (lazy sidecar WebVTT) ───────────────────────────────────────
 
   var vttCache = {};
   var activeTextTrack = null;
-  var subPollTimer = null;
-  var subPollAttempts = 0;
-  var subsReady = false;
+  var subExtractPollTimer = null;
+  var subExtractRequested = false;
+  var pendingSubIdx = -1;
 
   function fetchSubtitleTracks() {
     if (!hlsSessionId || !monitorrOrigin) return;
     vttCache = {};
-    subsReady = false;
-    subPollAttempts = 0;
     activeSubIndex = -1;
-    if (btnCC) btnCC.style.display = 'none';
-    pollSubtitleTracks();
-  }
+    subExtractRequested = false;
+    pendingSubIdx = -1;
 
-  function pollSubtitleTracks() {
-    if (!hlsSessionId || !monitorrOrigin) return;
     fetch(monitorrOrigin + '/api/cast/hls/' + hlsSessionId + '/subtitles')
       .then(function (r) { return r.json(); })
       .then(function (data) {
         subtitleTracks = data.tracks || [];
+        console.log(TAG, 'Subtitle tracks:', subtitleTracks.length);
+        updateCCButton();
 
-        var readyCount = 0;
-        var textCount = 0;
+        var defaultIdx = -1;
         for (var i = 0; i < subtitleTracks.length; i++) {
-          if (subtitleTracks[i].vttUrl) textCount++;
-          if (subtitleTracks[i].vttUrl && subtitleTracks[i].vttReady) readyCount++;
+          if (subtitleTracks[i].isDefault) { defaultIdx = i; break; }
         }
-
-        console.log(TAG, 'Subs poll #' + subPollAttempts + ': ' + readyCount + '/' + textCount + ' VTT ready');
-
-        if (readyCount > 0) {
-          loadReadyVttTracks();
+        if (defaultIdx >= 0) {
+          console.log(TAG, 'Auto-enabling default sub:', subtitleTracks[defaultIdx].language);
+          requestSubtitle(defaultIdx);
         }
+      })
+      .catch(function () { subtitleTracks = []; updateCCButton(); });
+  }
 
-        subPollAttempts++;
-        if (readyCount < textCount && subPollAttempts < 20) {
-          clearTimeout(subPollTimer);
-          subPollTimer = setTimeout(pollSubtitleTracks, 3000);
+  function requestSubtitle(idx) {
+    if (idx < 0 || idx >= subtitleTracks.length) return;
+
+    activeSubIndex = idx;
+    pendingSubIdx = idx;
+    updateCCButton();
+
+    if (vttCache[idx]) {
+      applyCuesForOffset(idx);
+      pendingSubIdx = -1;
+      updateCCButton();
+      return;
+    }
+
+    var track = subtitleTracks[idx];
+    if (track.vttReady) {
+      fetchAndCacheVtt(idx, track, function () {
+        if (pendingSubIdx === idx) {
+          applyCuesForOffset(idx);
+          pendingSubIdx = -1;
+          updateCCButton();
+        }
+      });
+      return;
+    }
+
+    if (!subExtractRequested) {
+      subExtractRequested = true;
+      console.log(TAG, 'Requesting subtitle extraction');
+      fetch(monitorrOrigin + '/api/cast/hls/' + hlsSessionId + '/subs/extract', { method: 'POST' })
+        .catch(function () {});
+    }
+
+    pollForVttReady(idx);
+  }
+
+  function pollForVttReady(idx) {
+    clearTimeout(subExtractPollTimer);
+    if (!hlsSessionId || !monitorrOrigin) return;
+
+    fetch(monitorrOrigin + '/api/cast/hls/' + hlsSessionId + '/subtitles')
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        subtitleTracks = data.tracks || [];
+        updateCCButton();
+
+        var track = subtitleTracks[idx];
+        if (track && track.vttReady) {
+          console.log(TAG, 'VTT ready for', track.language);
+          fetchAndCacheVtt(idx, track, function () {
+            if (pendingSubIdx === idx) {
+              applyCuesForOffset(idx);
+              pendingSubIdx = -1;
+              updateCCButton();
+            }
+          });
+        } else {
+          subExtractPollTimer = setTimeout(function () { pollForVttReady(idx); }, 2000);
         }
       })
       .catch(function () {
-        subPollAttempts++;
-        if (subPollAttempts < 20) {
-          clearTimeout(subPollTimer);
-          subPollTimer = setTimeout(pollSubtitleTracks, 3000);
-        }
+        subExtractPollTimer = setTimeout(function () { pollForVttReady(idx); }, 2000);
       });
-  }
-
-  function loadReadyVttTracks() {
-    var pending = 0;
-    for (var i = 0; i < subtitleTracks.length; i++) {
-      var t = subtitleTracks[i];
-      if (t.vttUrl && t.vttReady && !vttCache[i]) {
-        pending++;
-        fetchAndCacheVtt(i, t, function () {
-          pending--;
-          if (pending <= 0) onVttLoadComplete();
-        });
-      }
-    }
-    if (pending === 0 && !subsReady) onVttLoadComplete();
-  }
-
-  function onVttLoadComplete() {
-    var hasCachedSubs = false;
-    var defaultIdx = -1;
-    for (var i = 0; i < subtitleTracks.length; i++) {
-      if (vttCache[i] && vttCache[i].length > 0) {
-        hasCachedSubs = true;
-        if (subtitleTracks[i].isDefault && defaultIdx < 0) defaultIdx = i;
-      }
-    }
-
-    subsReady = hasCachedSubs;
-    updateCCButton();
-
-    if (hasCachedSubs && activeSubIndex < 0 && defaultIdx >= 0) {
-      console.log(TAG, 'Auto-enabling default subtitle:', subtitleTracks[defaultIdx].language);
-      toggleSubtitle(defaultIdx);
-    }
   }
 
   function fetchAndCacheVtt(idx, trackInfo, onDone) {
@@ -480,37 +492,29 @@
     if (subtitleTracks.length === 0) return;
     var next = activeSubIndex + 1;
     if (next >= subtitleTracks.length) next = -1;
-    toggleSubtitle(next);
-  }
 
-  function toggleSubtitle(idx) {
-    activeSubIndex = idx;
-    updateCCButton();
-
-    if (idx < 0) {
+    if (next < 0) {
+      activeSubIndex = -1;
+      pendingSubIdx = -1;
+      clearTimeout(subExtractPollTimer);
       removeAllTextTracks();
+      updateCCButton();
       console.log(TAG, 'Subtitles off');
       return;
     }
 
-    var track = subtitleTracks[idx];
-    if (track.vttUrl && track.vttReady && vttCache[idx]) {
-      applyCuesForOffset(idx);
-      console.log(TAG, 'Sidecar subtitle:', track.language);
-    } else if (track.vttUrl && track.vttReady) {
-      fetchAndCacheVtt(idx, track);
-      setTimeout(function () { applyCuesForOffset(idx); }, 1500);
-      console.log(TAG, 'Fetching sidecar then applying:', track.language);
-    } else {
-      console.log(TAG, 'No VTT available for track:', track.language, '- image-based subs not supported in sidecar mode');
-    }
+    requestSubtitle(next);
   }
 
   function updateCCButton() {
     if (!btnCC) return;
-    if (!subsReady) { btnCC.style.display = 'none'; return; }
+    if (subtitleTracks.length === 0) { btnCC.style.display = 'none'; return; }
     btnCC.style.display = 'flex';
-    if (activeSubIndex >= 0 && subtitleTracks[activeSubIndex]) {
+
+    if (pendingSubIdx >= 0 && !vttCache[pendingSubIdx]) {
+      btnCC.classList.add('active');
+      if (ccLabel) ccLabel.textContent = '...';
+    } else if (activeSubIndex >= 0 && subtitleTracks[activeSubIndex]) {
       btnCC.classList.add('active');
       if (ccLabel) ccLabel.textContent = subtitleTracks[activeSubIndex].language.toUpperCase();
     } else {
@@ -546,8 +550,8 @@
     iconPlay.style.display = video.paused ? '' : 'none';
     iconPause.style.display = video.paused ? 'none' : '';
   }
-  video.addEventListener('play', updatePlayPauseIcon);
-  video.addEventListener('pause', updatePlayPauseIcon);
+  video.addEventListener('play', function () { updatePlayPauseIcon(); startProgressReporting(); });
+  video.addEventListener('pause', function () { updatePlayPauseIcon(); reportProgress(); });
   video.addEventListener('playing', updatePlayPauseIcon);
 
   video.addEventListener('timeupdate', function () {
@@ -573,15 +577,20 @@
   });
 
   video.addEventListener('ended', function () {
-    if (!serverSeeking) { destroyHls(); showIdle(); }
+    if (!serverSeeking) { reportProgress(); stopProgressReporting(); destroyHls(); showIdle(); }
   });
 
   function updateMetadata() {
     if (!lastMetadata) return;
     if (metaTitle) metaTitle.textContent = lastMetadata.title || '';
     if (metaSubtitle) metaSubtitle.textContent = lastMetadata.subtitle || '';
-    if (lastMetadata.images && lastMetadata.images.length > 0 && metaPoster) {
-      metaPoster.src = lastMetadata.images[0].url;
+
+    var posterSrc = null;
+    if (customData && customData.posterUrl) posterSrc = customData.posterUrl;
+    else if (lastMetadata.images && lastMetadata.images.length > 0) posterSrc = lastMetadata.images[0].url;
+
+    if (posterSrc && metaPoster) {
+      metaPoster.src = posterSrc;
       metaPoster.style.display = 'block';
     } else if (metaPoster) { metaPoster.style.display = 'none'; }
   }
@@ -1118,10 +1127,50 @@
   // the SDK's PlayerManager handles it natively via interceptors.
 
   window.addEventListener('beforeunload', function () {
+    reportProgressFinal();
     video.pause();
     killServerSession();
     destroyHls();
   });
+
+  // ── Progress Reporting ──────────────────────────────────────────────────
+
+  var progressTimer = null;
+
+  function startProgressReporting() {
+    stopProgressReporting();
+    progressTimer = setInterval(reportProgress, 15000);
+  }
+
+  function stopProgressReporting() {
+    if (progressTimer) { clearInterval(progressTimer); progressTimer = null; }
+  }
+
+  function reportProgress() {
+    if (!monitorrOrigin || !customData || !customData.mediaItemId) return;
+    if (video.paused && !video.ended) return;
+    var pos = Math.floor(getCurrentTime() * 1000);
+    var dur = realDuration > 0 ? Math.floor(realDuration * 1000) : 0;
+    if (pos <= 0 || dur <= 0) return;
+    var url = monitorrOrigin + '/api/media/playback/progress';
+    var body = JSON.stringify({ mediaItemId: customData.mediaItemId, positionMs: pos, durationMs: dur });
+    fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body }).catch(function () {});
+  }
+
+  function reportProgressFinal() {
+    if (!monitorrOrigin || !customData || !customData.mediaItemId) return;
+    var pos = Math.floor(getCurrentTime() * 1000);
+    var dur = realDuration > 0 ? Math.floor(realDuration * 1000) : 0;
+    if (pos <= 0 || dur <= 0) return;
+    var url = monitorrOrigin + '/api/media/playback/progress';
+    var body = JSON.stringify({ mediaItemId: customData.mediaItemId, positionMs: pos, durationMs: dur });
+    try {
+      var xhr = new XMLHttpRequest();
+      xhr.open('POST', url, false);
+      xhr.setRequestHeader('Content-Type', 'application/json');
+      xhr.send(body);
+    } catch (e) {}
+  }
 
   context.start(opts);
   console.log(TAG, 'Receiver started');
