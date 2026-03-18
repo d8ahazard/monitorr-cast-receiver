@@ -1,6 +1,6 @@
 'use strict';
 
-// ─── Monitorr Cast Receiver v2.4.4 ──────────────────────────────────────────
+// ─── Monitorr Cast Receiver v2.4.5 ──────────────────────────────────────────
 //
 // Uses PlayerManager interceptors (not custom namespace for media).
 // The SDK owns the media state machine and UI. We own the player (HLS.js)
@@ -9,7 +9,7 @@
 
 (function () {
 
-  var VERSION = '2.4.4';
+  var VERSION = '2.4.5';
   var TAG = '[Monitorr v' + VERSION + ']';
   var MONITORR_NS = 'urn:x-cast:com.monitorr.cast';
 
@@ -1034,12 +1034,6 @@
         cancelSeekPreview();
       } else if (isOverlayVisible()) {
         hideOverlayNow();
-      } else {
-        video.pause();
-        killServerSession();
-        destroyHls();
-        showIdle();
-        context.stop();
       }
       return;
     }
@@ -1089,7 +1083,7 @@
 
   function killServerSession() {
     if (hlsSessionId && monitorrOrigin) {
-      var pos = Math.floor(getCurrentTime() * 1000);
+      var pos = Math.floor(getCurrentPlaybackTime() * 1000);
       var dur = realDuration > 0 ? Math.floor(realDuration * 1000) : 0;
       var url = monitorrOrigin + '/api/cast/hls/' + hlsSessionId + '/kill';
       if (pos > 0 && dur > 0) url += '?positionMs=' + pos + '&durationMs=' + dur;
