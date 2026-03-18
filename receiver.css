@@ -17,6 +17,12 @@
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+cast-media-player,
+[class^="cast-overlay"],
+[class^="cast-controls"],
+[class*="--cast-"],
+.overlay { display: none !important; pointer-events: none !important; }
+
 html, body {
   width: 100%;
   height: 100%;
@@ -155,6 +161,14 @@ html, body {
   background: rgba(3, 169, 244, 0.12);
 }
 
+.mr-btn.mr-focused {
+  background: rgba(3, 169, 244, 0.18);
+  color: var(--mr-text);
+  border-color: rgba(3, 169, 244, 0.55);
+  outline: 2px solid rgba(3, 169, 244, 0.85);
+  outline-offset: 1px;
+}
+
 .mr-cc-label {
   font-size: 10px; font-weight: 600;
   letter-spacing: 0.04em;
@@ -221,4 +235,3 @@ html, body {
   padding: 4px 8px;
   border-radius: 2px;
 }
-
