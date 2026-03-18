@@ -38,30 +38,39 @@
           <span id="mr-time-right" class="mr-time">--:--</span>
         </div>
 
-        <!-- Controls + metadata row -->
+        <!-- Controls row -->
         <div class="mr-controls-row">
-          <!-- Poster + metadata -->
+          <!-- Meta (left) -->
           <img id="mr-poster" class="mr-poster" src="" alt="" style="display:none">
           <div class="mr-meta">
             <div id="mr-title" class="mr-title"></div>
             <div id="mr-subtitle" class="mr-subtitle"></div>
           </div>
 
-          <!-- Control buttons -->
-          <div class="mr-buttons">
-            <button id="mr-btn-skip-prev" class="mr-btn" style="display:none" title="Previous episode">
+          <!-- Buttons (center-right) -->
+          <div id="mr-controls" class="mr-controls">
+            <button class="mr-btn" data-action="skip-prev" style="display:none" id="mr-btn-skip-prev">
               <span class="bi bi-skip-start-fill"></span>
             </button>
-            <button id="mr-btn-cc" class="mr-btn" style="display:none" title="Subtitles">
+            <button class="mr-btn" data-action="seek-back">
+              <span class="bi bi-rewind-fill"></span>
+            </button>
+            <button class="mr-btn mr-btn-play" data-action="play-pause" id="mr-btn-play">
+              <span class="bi bi-play-fill" id="mr-play-icon"></span>
+            </button>
+            <button class="mr-btn" data-action="seek-forward">
+              <span class="bi bi-fast-forward-fill"></span>
+            </button>
+            <button class="mr-btn" data-action="skip-next" style="display:none" id="mr-btn-skip-next">
+              <span class="bi bi-skip-end-fill"></span>
+            </button>
+            <button class="mr-btn" data-action="cc" style="display:none" id="mr-btn-cc">
               <span class="bi bi-badge-cc-fill"></span>
               <span id="mr-cc-label" class="mr-cc-label"></span>
             </button>
-            <button id="mr-btn-skip-next" class="mr-btn" style="display:none" title="Next episode">
-              <span class="bi bi-skip-end-fill"></span>
-            </button>
           </div>
 
-          <!-- Brand -->
+          <!-- Brand (right) -->
           <div class="mr-brand">
             <span class="mr-brand-name">Monitorr</span>
             <span class="mr-brand-ver">v0.5.2</span>

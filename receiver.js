@@ -1,10 +1,9 @@
 'use strict';
 
-// ─── Monitorr Cast Receiver v0.5.0 ──────────────────────────────────────────
+// ─── Monitorr Cast Receiver v0.5.2 ──────────────────────────────────────────
 //
-// Fully custom receiver. NO media namespace. ALL communication through
-// urn:x-cast:com.monitorr.cast. The Cast platform sees this as a custom app,
-// not a media app. No system media UI, no duplicate controls. Just us.
+// Fully custom receiver. Custom namespace only (no media namespace).
+// D-pad state machine: menu hidden = seek, menu visible = navigate buttons.
 // ─────────────────────────────────────────────────────────────────────────────
 
 (function () {
@@ -32,7 +31,10 @@
   var btnCC = document.getElementById('mr-btn-cc');
   var btnSkipPrev = document.getElementById('mr-btn-skip-prev');
   var btnSkipNext = document.getElementById('mr-btn-skip-next');
+  var btnPlay = document.getElementById('mr-btn-play');
+  var playIcon = document.getElementById('mr-play-icon');
   var ccLabel = document.getElementById('mr-cc-label');
+  var controlsEl = document.getElementById('mr-controls');
 
   // ── State ──────────────────────────────────────────────────────────────────
 
@@ -46,12 +48,239 @@
   var customData = null;
   var serverSeeking = false;
   var statusTimer = null;
-  var overlayTimer = null;
+  var menuTimer = null;
   var isHlsContent = false;
   var subtitleTracks = [];
   var activeSubIndex = -1;
 
-  // ── Message Handler ────────────────────────────────────────────────────────
+  // ── Menu / Focus State ─────────────────────────────────────────────────────
+
+  var menuVisible = false;
+  var focusIndex = -1;
+
+  function getVisibleButtons() {
+    if (!controlsEl) return [];
+    var btns = controlsEl.querySelectorAll('.mr-btn');
+    var visible = [];
+    for (var i = 0; i < btns.length; i++) {
+      if (btns[i].style.display !== 'none') visible.push(btns[i]);
+    }
+    return visible;
+  }
+
+  function setFocus(idx) {
+    var btns = getVisibleButtons();
+    // Clear all
+    for (var i = 0; i < btns.length; i++) btns[i].classList.remove('focused');
+    if (idx >= 0 && idx < btns.length) {
+      focusIndex = idx;
+      btns[idx].classList.add('focused');
+    } else {
+      focusIndex = -1;
+    }
+  }
+
+  function showMenu() {
+    if (!currentUrl) return;
+    menuVisible = true;
+    overlay.classList.add('visible');
+    // Focus play/pause by default
+    var btns = getVisibleButtons();
+    var playIdx = 0;
+    for (var i = 0; i < btns.length; i++) {
+      if (btns[i].dataset.action === 'play-pause') { playIdx = i; break; }
+    }
+    setFocus(playIdx);
+    resetMenuTimer();
+  }
+
+  function hideMenu() {
+    menuVisible = false;
+    overlay.classList.remove('visible');
+    setFocus(-1);
+    clearTimeout(menuTimer);
+  }
+
+  function resetMenuTimer() {
+    clearTimeout(menuTimer);
+    menuTimer = setTimeout(hideMenu, 6000);
+  }
+
+  function activateFocused() {
+    var btns = getVisibleButtons();
+    if (focusIndex < 0 || focusIndex >= btns.length) return;
+    var action = btns[focusIndex].dataset.action;
+    resetMenuTimer();
+
+    switch (action) {
+      case 'play-pause':
+        if (video.paused) video.play().catch(function(){}); else video.pause();
+        updatePlayIcon();
+        broadcast();
+        break;
+      case 'seek-back':
+        hideMenu();
+        tapSeek(-1);
+        break;
+      case 'seek-forward':
+        hideMenu();
+        tapSeek(1);
+        break;
+      case 'cc':
+        cycleSubtitle();
+        break;
+      case 'skip-prev':
+      case 'skip-next':
+        // TODO: send skip message to sender
+        break;
+    }
+  }
+
+  // ── D-pad Seeking (menu hidden) ────────────────────────────────────────────
+
+  var scrubState = null;
+
+  function getScrubStep(holdMs) {
+    if (holdMs < 1000) return 5;
+    if (holdMs < 3000) return 10;
+    if (holdMs < 6000) return 30;
+    return 60;
+  }
+
+  function startScrub(direction) {
+    if (serverSeeking || !currentUrl) return;
+    var now = seekOffset + (video.currentTime || 0);
+    var total = realDuration > 0 ? realDuration : (isFinite(video.duration) ? video.duration : 0);
+    scrubState = { direction: direction, startTime: now, scrubTime: now, holdStart: Date.now(), total: total };
+    // Show overlay during scrub for visual feedback
+    overlay.classList.add('visible');
+    tickScrub();
+    scrubState.interval = setInterval(tickScrub, 200);
+  }
+
+  function tickScrub() {
+    if (!scrubState) return;
+    var holdMs = Date.now() - scrubState.holdStart;
+    var step = getScrubStep(holdMs);
+    scrubState.scrubTime += scrubState.direction * step * 0.2;
+    scrubState.scrubTime = Math.max(0, Math.min(scrubState.total || 999999, scrubState.scrubTime));
+    if (timeLeft) timeLeft.textContent = fmt(scrubState.scrubTime);
+    if (scrubState.total > 0 && seekPlayed) {
+      seekPlayed.style.width = Math.min(100, scrubState.scrubTime / scrubState.total * 100) + '%';
+    }
+  }
+
+  function endScrub() {
+    if (!scrubState) return;
+    clearInterval(scrubState.interval);
+    var target = scrubState.scrubTime;
+    var moved = Math.abs(target - scrubState.startTime);
+    scrubState = null;
+    overlay.classList.remove('visible');
+    if (moved < 1) return;
+    handleSeek({ time: target }, null);
+  }
+
+  function tapSeek(direction) {
+    if (serverSeeking || !currentUrl) return;
+    var now = seekOffset + (video.currentTime || 0);
+    var jump = direction > 0 ? 10 : -5;
+    handleSeek({ time: Math.max(0, now + jump) }, null);
+  }
+
+  // ── D-pad Event Handler ────────────────────────────────────────────────────
+
+  var keyHoldTimer = null;
+  var keyHeld = false;
+
+  document.addEventListener('keydown', function (e) {
+    var code = e.keyCode;
+
+    // Play/Pause media keys -- always work
+    if (code === 179 || code === 415 || code === 19) {
+      if (currentUrl && !serverSeeking) {
+        if (video.paused) video.play().catch(function(){}); else video.pause();
+        updatePlayIcon(); broadcast();
+      }
+      e.preventDefault();
+      return;
+    }
+
+    if (!currentUrl) return;
+
+    if (menuVisible) {
+      // ── Menu visible: navigate buttons ──
+      var btns = getVisibleButtons();
+      switch (code) {
+        case 37: // Left: move focus left
+          if (focusIndex > 0) setFocus(focusIndex - 1);
+          resetMenuTimer();
+          e.preventDefault();
+          break;
+        case 39: // Right: move focus right
+          if (focusIndex < btns.length - 1) setFocus(focusIndex + 1);
+          resetMenuTimer();
+          e.preventDefault();
+          break;
+        case 38: // Up: hide menu
+        case 27: // Escape / Back
+        case 8:  // Backspace (some remotes)
+          hideMenu();
+          e.preventDefault();
+          break;
+        case 40: // Down: hide menu
+          hideMenu();
+          e.preventDefault();
+          break;
+        case 13: // Enter/Select: activate
+          activateFocused();
+          e.preventDefault();
+          break;
+      }
+    } else {
+      // ── Menu hidden: seek or show menu ──
+      switch (code) {
+        case 38: // Up: show menu
+        case 40: // Down: show menu
+          showMenu();
+          e.preventDefault();
+          break;
+        case 37: // Left: seek back
+        case 39: // Right: seek forward
+          if (!e.repeat) {
+            keyHeld = false;
+            var dir = code === 39 ? 1 : -1;
+            keyHoldTimer = setTimeout(function () {
+              keyHeld = true;
+              startScrub(dir);
+            }, 300);
+          }
+          e.preventDefault();
+          break;
+        case 13: // Enter: show menu
+          showMenu();
+          e.preventDefault();
+          break;
+      }
+    }
+  });
+
+  document.addEventListener('keyup', function (e) {
+    if (e.keyCode === 37 || e.keyCode === 39) {
+      if (keyHoldTimer) { clearTimeout(keyHoldTimer); keyHoldTimer = null; }
+      if (!menuVisible) {
+        if (keyHeld) {
+          endScrub();
+        } else {
+          tapSeek(e.keyCode === 39 ? 1 : -1);
+        }
+      }
+      keyHeld = false;
+      e.preventDefault();
+    }
+  });
+
+  // ── Cast Message Handler ───────────────────────────────────────────────────
 
   context.addCustomMessageListener(NS, function (event) {
     var data = event.data;
@@ -59,21 +288,20 @@
 
     switch (data.type) {
       case 'LOAD':        handleLoad(data, sid); break;
-      case 'PLAY':        video.play().catch(function(){}); reply(sid, 'STATUS'); break;
-      case 'PAUSE':       video.pause(); reply(sid, 'STATUS'); break;
+      case 'PLAY':        video.play().catch(function(){}); updatePlayIcon(); reply(sid); break;
+      case 'PAUSE':       video.pause(); updatePlayIcon(); reply(sid); break;
       case 'STOP':        handleStop(sid); break;
       case 'SEEK':        handleSeek(data, sid); break;
-      case 'GET_STATUS':  reply(sid, 'STATUS'); break;
+      case 'GET_STATUS':  reply(sid); break;
       case 'SET_VOLUME':
         if (data.level !== undefined) video.volume = data.level;
         if (data.muted !== undefined) video.muted = data.muted;
-        reply(sid, 'STATUS');
+        reply(sid);
         break;
       case 'PING':
         send(sid, { type: 'PONG', version: VERSION });
         break;
-      default:
-        reply(sid, 'STATUS');
+      default: reply(sid);
     }
   });
 
@@ -84,7 +312,7 @@
     if (!url) return;
     console.log(TAG, 'LOAD:', url);
 
-    destroyHls(); stopBroadcaster();
+    destroyHls(); stopBroadcaster(); hideMenu();
     currentUrl = url;
     seekOffset = 0;
     serverSeeking = false;
@@ -102,7 +330,7 @@
 
     if (data.startTime > 0) seekOffset = data.startTime;
 
-    showPlayer(); updateMetadata(); updateSkipButtons(); showSpinner();
+    showPlayer(); updateMetadata(); updateSkipButtons(); updatePlayIcon(); showSpinner();
 
     if (isHlsContent && typeof Hls !== 'undefined' && Hls.isSupported()) {
       loadHls(url, function () {
@@ -110,15 +338,15 @@
         if (realDuration <= 0) fetchDuration();
         if (hlsSessionId && monitorrOrigin) fetchSubtitleTracks();
         startBroadcaster();
-        reply(sid, 'STATUS');
-        flashOverlay();
+        reply(sid);
+        showMenu(); // Show menu briefly on load
       });
     } else {
       video.src = url;
       video.addEventListener('canplay', function f() {
         video.removeEventListener('canplay', f);
         video.play().catch(function(){});
-        hideSpinner(); startBroadcaster(); reply(sid, 'STATUS');
+        hideSpinner(); startBroadcaster(); reply(sid); showMenu();
       });
     }
   }
@@ -131,7 +359,7 @@
 
     if (!isHlsContent || !hlsSessionId || !monitorrOrigin) {
       video.currentTime = t;
-      reply(sid, 'STATUS');
+      if (sid) reply(sid);
       return;
     }
 
@@ -153,7 +381,7 @@
         h.once(Hls.Events.MANIFEST_PARSED, function () { h.attachMedia(video); });
         h.once(Hls.Events.FRAG_BUFFERED, function () {
           video.play().catch(function(){});
-          serverSeeking = false; hideSpinner(); broadcast(); flashOverlay();
+          serverSeeking = false; hideSpinner(); updatePlayIcon(); broadcast();
         });
         h.on(Hls.Events.ERROR, function (_, e) {
           if (e.fatal) { if (e.type === Hls.ErrorTypes.NETWORK_ERROR) h.startLoad(); else if (e.type === Hls.ErrorTypes.MEDIA_ERROR) h.recoverMediaError(); }
@@ -166,7 +394,7 @@
   // ── STOP ───────────────────────────────────────────────────────────────────
 
   function handleStop(sid) {
-    destroyHls(); stopBroadcaster();
+    destroyHls(); stopBroadcaster(); hideMenu();
     send(sid, { type: 'STATUS', state: 'IDLE' });
     showIdle();
   }
@@ -180,6 +408,7 @@
     hls.attachMedia(video);
     hls.on(Hls.Events.MANIFEST_PARSED, function () {
       video.play().catch(function(){});
+      updatePlayIcon();
       if (onReady) { onReady(); onReady = null; }
     });
     hls.on(Hls.Events.ERROR, function (_, d) {
@@ -197,10 +426,8 @@
       state: getState(),
       currentTime: seekOffset + (video.currentTime || 0),
       duration: realDuration > 0 ? realDuration : (isFinite(video.duration) ? video.duration : 0),
-      volume: video.volume,
-      muted: video.muted,
-      url: currentUrl,
-      hlsSessionId: hlsSessionId,
+      volume: video.volume, muted: video.muted,
+      url: currentUrl, hlsSessionId: hlsSessionId,
       metadata: lastMetadata,
       subtitles: { tracks: subtitleTracks, activeIndex: activeSubIndex },
       version: VERSION
@@ -214,7 +441,7 @@
     return 'PLAYING';
   }
 
-  function reply(sid, type) { send(sid, buildStatus()); }
+  function reply(sid) { if (sid) send(sid, buildStatus()); }
   function send(sid, msg) { try { context.sendCustomMessage(NS, sid, msg); } catch(e){} }
   function broadcast() { context.getSenders().forEach(function(s) { send(s.id, buildStatus()); }); }
 
@@ -279,7 +506,7 @@
         h.loadSource(reloadUrl);
         h.once(Hls.Events.MANIFEST_PARSED, function () { h.attachMedia(video); });
         h.once(Hls.Events.FRAG_BUFFERED, function () {
-          video.play().catch(function(){}); serverSeeking = false; hideSpinner(); broadcast(); flashOverlay();
+          video.play().catch(function(){}); serverSeeking = false; hideSpinner(); broadcast();
         });
         h.on(Hls.Events.ERROR, function (_, e) { if (e.fatal && e.type === Hls.ErrorTypes.NETWORK_ERROR) h.startLoad(); });
         setTimeout(function () { if (serverSeeking) { serverSeeking = false; hideSpinner(); } }, 20000);
@@ -304,128 +531,14 @@
     if (btnSkipNext) btnSkipNext.style.display = hasNext ? 'flex' : 'none';
   }
 
+  function updatePlayIcon() {
+    if (playIcon) playIcon.className = video.paused ? 'bi bi-play-fill' : 'bi bi-pause-fill';
+  }
+
   // ── UI ─────────────────────────────────────────────────────────────────────
 
-  if (btnCC) btnCC.addEventListener('click', cycleSubtitle);
-
-  // ── Remote Control (D-pad with accelerating seek) ──────────────────────────
-  //
-  // Tap: fixed jump (right +10s, left -5s)
-  // Hold: accelerating scrub (5s → 10s → 30s → 60s per tick)
-  // Release: commit the seek to server
-
-  var scrubState = null; // { direction, startTime, scrubTime, interval, holdStart }
-
-  function getScrubStep(holdMs) {
-    if (holdMs < 1000) return 5;
-    if (holdMs < 3000) return 10;
-    if (holdMs < 6000) return 30;
-    return 60;
-  }
-
-  function startScrub(direction) {
-    if (serverSeeking || !currentUrl) return;
-    var now = seekOffset + (video.currentTime || 0);
-    var total = realDuration > 0 ? realDuration : (isFinite(video.duration) ? video.duration : 0);
-    scrubState = { direction: direction, startTime: now, scrubTime: now, holdStart: Date.now(), total: total };
-    // First tick immediately
-    tickScrub();
-    scrubState.interval = setInterval(tickScrub, 200);
-  }
-
-  function tickScrub() {
-    if (!scrubState) return;
-    var holdMs = Date.now() - scrubState.holdStart;
-    var step = getScrubStep(holdMs);
-    scrubState.scrubTime += scrubState.direction * step * 0.2; // 0.2 = per-tick fraction (5 ticks/s)
-    scrubState.scrubTime = Math.max(0, Math.min(scrubState.total || 999999, scrubState.scrubTime));
-
-    // Update seek bar visually (don't trigger actual seek yet)
-    if (timeLeft) timeLeft.textContent = fmt(scrubState.scrubTime);
-    if (scrubState.total > 0 && seekPlayed) {
-      seekPlayed.style.width = Math.min(100, scrubState.scrubTime / scrubState.total * 100) + '%';
-    }
-    flashOverlay();
-  }
-
-  function endScrub() {
-    if (!scrubState) return;
-    clearInterval(scrubState.interval);
-    var target = scrubState.scrubTime;
-    var moved = Math.abs(target - scrubState.startTime);
-    scrubState = null;
-
-    if (moved < 1) return; // Didn't move enough, ignore
-
-    // Commit the seek
-    handleSeek({ time: target }, null);
-  }
-
-  function tapSeek(direction) {
-    if (serverSeeking || !currentUrl) return;
-    var now = seekOffset + (video.currentTime || 0);
-    var jump = direction > 0 ? 10 : -5;
-    var target = Math.max(0, now + jump);
-    handleSeek({ time: target }, null);
-  }
-
-  var keyHoldTimer = null;
-  var keyHeld = false;
-
-  document.addEventListener('keydown', function (e) {
-    flashOverlay();
-
-    // Play/Pause
-    if (e.keyCode === 179 || e.keyCode === 415 || e.keyCode === 19 || e.keyCode === 13) {
-      if (currentUrl && !serverSeeking) {
-        if (video.paused) video.play().catch(function(){}); else video.pause();
-        broadcast();
-      }
-      e.preventDefault();
-      return;
-    }
-
-    // Left/Right: start hold detection
-    if ((e.keyCode === 37 || e.keyCode === 39) && !e.repeat) {
-      keyHeld = false;
-      var dir = e.keyCode === 39 ? 1 : -1;
-      keyHoldTimer = setTimeout(function () {
-        keyHeld = true;
-        startScrub(dir);
-      }, 300); // 300ms to distinguish tap from hold
-      e.preventDefault();
-      return;
-    }
-
-    // During hold, e.repeat fires -- keep scrubbing (handled by interval)
-    if ((e.keyCode === 37 || e.keyCode === 39) && e.repeat) {
-      e.preventDefault();
-      return;
-    }
-
-    // CC toggle on up arrow
-    if (e.keyCode === 38 && subtitleTracks.length > 0) {
-      cycleSubtitle();
-      e.preventDefault();
-    }
-  });
-
-  document.addEventListener('keyup', function (e) {
-    if (e.keyCode === 37 || e.keyCode === 39) {
-      if (keyHoldTimer) { clearTimeout(keyHoldTimer); keyHoldTimer = null; }
-      if (keyHeld) {
-        endScrub();
-      } else {
-        // It was a tap, not a hold
-        tapSeek(e.keyCode === 39 ? 1 : -1);
-      }
-      keyHeld = false;
-      e.preventDefault();
-    }
-  });
-
   video.addEventListener('timeupdate', function () {
-    if (serverSeeking) return;
+    if (serverSeeking || scrubState) return;
     var total = realDuration > 0 ? realDuration : (isFinite(video.duration) ? video.duration : 0);
     var cur = seekOffset + (video.currentTime || 0);
     if (timeLeft) timeLeft.textContent = fmt(cur);
@@ -434,7 +547,9 @@
     if (seekBuffered && total > 0) seekBuffered.style.width = Math.min(100, (seekOffset + (isFinite(video.duration) ? video.duration : 0)) / total * 100) + '%';
   });
 
-  video.addEventListener('ended', function () { if (!serverSeeking) { destroyHls(); stopBroadcaster(); showIdle(); } });
+  video.addEventListener('play', updatePlayIcon);
+  video.addEventListener('pause', updatePlayIcon);
+  video.addEventListener('ended', function () { if (!serverSeeking) { destroyHls(); stopBroadcaster(); hideMenu(); showIdle(); } });
 
   function updateMetadata() {
     if (!lastMetadata) return;
@@ -442,12 +557,6 @@
     if (metaSubtitle) metaSubtitle.textContent = lastMetadata.subtitle || '';
     if (lastMetadata.images && lastMetadata.images.length > 0 && metaPoster) { metaPoster.src = lastMetadata.images[0].url; metaPoster.style.display = 'block'; }
     else if (metaPoster) metaPoster.style.display = 'none';
-  }
-
-  function flashOverlay() {
-    if (overlay) overlay.classList.add('visible');
-    clearTimeout(overlayTimer);
-    overlayTimer = setTimeout(function () { if (overlay) overlay.classList.remove('visible'); }, 6000);
   }
 
   function showPlayer() { if (idleScreen) idleScreen.style.display = 'none'; if (playerScreen) playerScreen.style.display = 'block'; }
@@ -459,7 +568,6 @@
   // ── Sender events ──────────────────────────────────────────────────────────
 
   context.addEventListener(cast.framework.system.EventType.SENDER_CONNECTED, function (e) {
-    console.log(TAG, 'Sender connected:', e.senderId);
     if (currentUrl) send(e.senderId, buildStatus());
   });
   context.addEventListener(cast.framework.system.EventType.SENDER_DISCONNECTED, function () {
@@ -474,7 +582,6 @@
   opts.maxInactivity = 3600;
   opts.customNamespaces = {};
   opts.customNamespaces[NS] = cast.framework.system.MessageType.JSON;
-  // NO media namespace. This is a custom app, not a media app.
 
   context.start(opts);
   console.log(TAG, 'Receiver started');
