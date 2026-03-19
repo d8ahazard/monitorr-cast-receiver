@@ -9,7 +9,7 @@
 
 (function () {
 
-  var VERSION = '2.4.8';
+  var VERSION = '2.4.9';
   var TAG = '[Monitorr v' + VERSION + ']';
   var MONITORR_NS = 'urn:x-cast:com.monitorr.cast';
 
@@ -292,8 +292,15 @@
 
   // ── HLS.js ─────────────────────────────────────────────────────────────────
 
+  function destroyHlsInstance() {
+    if (hls) { hls.detachMedia(); hls.destroy(); hls = null; }
+    video.pause();
+    video.removeAttribute('src');
+    video.load();
+  }
+
   function createAndLoadHls(url, onReady) {
-    destroyHls();
+    destroyHlsInstance();
     hls = new Hls({ enableWorker: false, maxBufferLength: 30, maxMaxBufferLength: 120, startLevel: -1 });
     hls.loadSource(url);
     hls.attachMedia(video);
