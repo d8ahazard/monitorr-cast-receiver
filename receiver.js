@@ -1,6 +1,6 @@
 'use strict';
 
-// ─── Monitorr Cast Receiver v2.4.8 ──────────────────────────────────────────
+// ─── Monitorr Cast Receiver v4.7.26 ──────────────────────────────────────────
 //
 // Uses PlayerManager interceptors (not custom namespace for media).
 // The SDK owns the media state machine and UI. We own the player (HLS.js)
@@ -9,7 +9,7 @@
 
 (function () {
 
-  var VERSION = '2.4.9';
+  var VERSION = '4.7.26';
   var TAG = '[Monitorr v' + VERSION + ']';
   var MONITORR_NS = 'urn:x-cast:com.monitorr.cast';
 
@@ -30,6 +30,8 @@
   var metaSubtitle = document.getElementById('mr-subtitle');
   var metaPoster = document.getElementById('mr-poster');
   var spinner = document.getElementById('mr-spinner');
+  var backdrop = document.getElementById('mr-backdrop');
+  var backdropImg = document.getElementById('mr-backdrop-img');
   var btnCC = document.getElementById('mr-btn-cc');
   var btnSkipPrev = document.getElementById('mr-btn-skip-prev');
   var btnSkipNext = document.getElementById('mr-btn-skip-next');
@@ -59,6 +61,7 @@
   var serverSeeking = false;
   var overlayTimer = null;
   var isHlsContent = false;
+  var currentBackdropUrl = null;
 
   var subtitleTracks = [];
   var activeSubIndex = -1;
@@ -121,9 +124,12 @@
       media.supportedMediaCommands = cast.framework.messages.Command.ALL_BASIC_MEDIA |
         cast.framework.messages.Command.STREAM_TRANSFER;
 
+      currentBackdropUrl = (customData && customData.backdropUrl) || null;
+
       showPlayer();
       updateMetadata();
       updateSkipButtons();
+      showBackdrop(currentBackdropUrl);
       showSpinner();
 
       if (seekOffset > 0 && realDuration > 0) {
@@ -136,6 +142,7 @@
         // Load with HLS.js. Return the request so the SDK's state machine advances.
         createAndLoadHls(url, function () {
           hideSpinner();
+          hideBackdrop();
           if (realDuration <= 0) fetchDuration();
           if (hlsSessionId && monitorrOrigin) fetchSubtitleTracks();
           flashOverlay();
@@ -183,6 +190,7 @@
       if (serverSeeking) return null;
       serverSeeking = true;
       video.pause();
+      showBackdrop(currentBackdropUrl);
       showSpinner();
 
       var seekUrl = monitorrOrigin + '/api/cast/hls/' + hlsSessionId + '/seek?t=' + targetTime.toFixed(1);
@@ -207,6 +215,7 @@
             video.play().catch(function () {});
             serverSeeking = false;
             hideSpinner();
+            hideBackdrop();
             playerManager.broadcastStatus();
             flashOverlay();
             reapplySubtitlesAfterSeek();
@@ -227,6 +236,7 @@
           serverSeeking = false;
           hideSpinner();
           video.play().catch(function () {});
+          hideBackdrop();
         });
 
       return null; // Suppress default seek
@@ -930,6 +940,7 @@
       seekLockedTime = target;
       startSeekKeepalive();
       video.pause();
+      showBackdrop(currentBackdropUrl);
       showSpinner();
       var seekUrl = monitorrOrigin + '/api/cast/hls/' + hlsSessionId + '/seek?t=' + target.toFixed(1);
       fetch(seekUrl, { method: 'POST' })
@@ -950,6 +961,7 @@
             seekLockedTime = null;
             stopSeekKeepalive();
             hideSpinner();
+            hideBackdrop();
             playerManager.broadcastStatus();
             flashOverlay();
             reapplySubtitlesAfterSeek();
@@ -960,13 +972,14 @@
               else if (e.type === Hls.ErrorTypes.MEDIA_ERROR) newHls.recoverMediaError();
             }
           });
-          setTimeout(function () { if (serverSeeking) { serverSeeking = false; seekLockedTime = null; stopSeekKeepalive(); video.play().catch(function () {}); hideSpinner(); } }, 12000);
+          setTimeout(function () { if (serverSeeking) { serverSeeking = false; seekLockedTime = null; stopSeekKeepalive(); video.play().catch(function () {}); hideSpinner(); hideBackdrop(); } }, 12000);
         })
         .catch(function () {
           serverSeeking = false;
           seekLockedTime = null;
           stopSeekKeepalive();
           hideSpinner();
+          hideBackdrop();
           video.play().catch(function () {});
         });
       return;
@@ -1084,9 +1097,16 @@
     consumeKeyEvent(e);
   }, true);
   function showPlayer() { if (idleScreen) idleScreen.style.display = 'none'; if (playerScreen) playerScreen.style.display = 'block'; }
-  function showIdle() { if (playerScreen) playerScreen.style.display = 'none'; if (idleScreen) idleScreen.style.display = 'flex'; }
+  function showIdle() { if (playerScreen) playerScreen.style.display = 'none'; if (idleScreen) idleScreen.style.display = 'flex'; hideBackdrop(); }
   function showSpinner() { if (spinner) spinner.style.display = 'flex'; }
   function hideSpinner() { if (spinner) spinner.style.display = 'none'; }
+
+  function showBackdrop(url) {
+    if (!backdrop || !backdropImg || !url) return;
+    backdropImg.src = url;
+    backdrop.classList.add('visible');
+  }
+  function hideBackdrop() { if (backdrop) backdrop.classList.remove('visible'); }
 
   function formatTime(s) {
     if (!s || !isFinite(s)) return '0:00';

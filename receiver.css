@@ -1,5 +1,5 @@
 /* ══════════════════════════════════════════════════════════════════════════════
-   Monitorr Cast Receiver v2.4.8
+   Monitorr Cast Receiver v4.7.26
    ══════════════════════════════════════════════════════════════════════════════ */
 
 :root {
@@ -35,8 +35,23 @@ html, body {
 /* ── Player ──────────────────────────────────────────────────────────────── */
 
 #mr-player { position: fixed; inset: 0; background: #000; }
-#mr-video { width: 100%; height: 100%; object-fit: contain; background: #000; }
+#mr-video { width: 100%; height: 100%; object-fit: contain; background: #000; position: relative; z-index: 2; }
 
+
+/* -- Backdrop ---------------------------------------------------------------- */
+
+#mr-backdrop {
+  position: fixed; inset: 0; z-index: 1;
+  overflow: hidden;
+  opacity: 0; transition: opacity 0.8s ease;
+}
+#mr-backdrop.visible { opacity: 1; }
+#mr-backdrop img {
+  width: 100%; height: 100%;
+  object-fit: cover;
+  filter: blur(24px) brightness(0.35) saturate(1.3);
+  transform: scale(1.15);
+}
 /* ── Spinner ─────────────────────────────────────────────────────────────── */
 
 #mr-spinner {
