@@ -1,6 +1,6 @@
 'use strict';
 
-// ─── Monitorr Cast Receiver v4.7.26 ──────────────────────────────────────────
+// ─── Monitorr Cast Receiver v4.8.0 ──────────────────────────────────────────
 //
 // Uses PlayerManager interceptors (not custom namespace for media).
 // The SDK owns the media state machine and UI. We own the player (HLS.js)
@@ -122,7 +122,9 @@
       // Force BUFFERED + all commands so sender UIs show seek bar
       media.streamType = cast.framework.messages.StreamType.BUFFERED;
       media.supportedMediaCommands = cast.framework.messages.Command.ALL_BASIC_MEDIA |
-        cast.framework.messages.Command.STREAM_TRANSFER;
+        cast.framework.messages.Command.STREAM_TRANSFER |
+        cast.framework.messages.Command.QUEUE_NEXT |
+        cast.framework.messages.Command.QUEUE_PREV;
 
       currentBackdropUrl = (customData && customData.backdropUrl) || null;
 
@@ -253,7 +255,9 @@
         for (var i = 0; i < msg.status.length; i++) {
           var s = msg.status[i];
           s.supportedMediaCommands = cast.framework.messages.Command.ALL_BASIC_MEDIA |
-            cast.framework.messages.Command.STREAM_TRANSFER;
+            cast.framework.messages.Command.STREAM_TRANSFER |
+            cast.framework.messages.Command.QUEUE_NEXT |
+            cast.framework.messages.Command.QUEUE_PREV;
 
           if (serverSeeking || seekLockedTime !== null) {
             s.playerState = cast.framework.messages.PlayerState.BUFFERING;
@@ -285,7 +289,8 @@
         mediaInfo.streamType = cast.framework.messages.StreamType.BUFFERED;
       }
       playerManager.setSupportedMediaCommands(
-        cast.framework.messages.Command.ALL_BASIC_MEDIA | cast.framework.messages.Command.STREAM_TRANSFER, true);
+        cast.framework.messages.Command.ALL_BASIC_MEDIA | cast.framework.messages.Command.STREAM_TRANSFER |
+        cast.framework.messages.Command.QUEUE_NEXT | cast.framework.messages.Command.QUEUE_PREV, true);
       playerManager.broadcastStatus();
     }
   );
@@ -619,7 +624,22 @@
   });
 
   video.addEventListener('ended', function () {
-    if (!serverSeeking) { reportProgress(); stopProgressReporting(); destroyHls(); showIdle(); }
+    if (serverSeeking) return;
+    reportProgress();
+    stopProgressReporting();
+
+    // If CAF queue is managing playback (album/playlist), let SDK handle track transitions
+    var qm = playerManager.getQueueManager();
+    if (qm) {
+      var queueItems = qm.getItems();
+      if (queueItems && queueItems.length > 1) {
+        console.log(TAG, 'Queue mode active (' + queueItems.length + ' items), letting SDK handle transition');
+        return;
+      }
+    }
+
+    destroyHls();
+    showIdle();
   });
 
   function updateMetadata() {
